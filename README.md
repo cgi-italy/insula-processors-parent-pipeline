@@ -25,6 +25,12 @@ and approves the image for promotion
 The approved image is published to the
 public registry for end users to access
 
+## Tools Used
 
-
-## Who does what?
+| Checkpoint | Tool | Job |
+|------------|------|-----|
+| Secret Scan | TruffleHog | Finds accidentally committed passwords/keys |
+| Build | Kaniko | Packages code into a Docker image |
+| Security Scan | Grype | Checks image for known vulnerabilities |
+| Security Scan | Trivy | Double checks vulnerabilities + secrets in image |
+| Promote/Publish | Skopeo | Moves approved image between registries |
