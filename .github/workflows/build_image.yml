@@ -86,9 +86,9 @@ jobs:
         # Gitlab: ls -lah to confirm image.tar exists
         run: ls -lah ${{ github.workspace }}/image.tar
       
-      - name: Upload image tar for secuirty scanning
-        #GitLab: artifacts: paths: -image.tar (automatic)
-        # GitHub: must explicitly upload so secuirty job can download it
+      - name: Upload image tar for security scanning
+        # GitLab: artifacts: paths: -image.tar (automatic)
+        # GitHub: must explicitly upload so security job can download it
         uses: actions/upload-artifact@v4
         with:
           name: docker-image-tar
