@@ -30,12 +30,16 @@ jobs:
       - name: Scan image with Grype
         # GitLab: /grype "$IMAGE_NAME" > grype_report.txt
         # GitHub: docker run grype sccanning image.tar directly from runner
+        # We scan image.tar directly instead - no Harbor pull, no credentials needed
+        # DECISION NEEDED: confirm with team lead - keep scanning local tar (current)
+        # or switch to pulling fresh from Harbor like GitLab did
+        # -e GRYPE_REGISTRY_AUTH_USERNAME=${{ secrets.HARBOR_USERNAME }} \
+        # -e GRYPE_REGISTRY_AUTH_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
+
         run: |
           SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
           docker run --rm \
            -v $(pwd)/image.tar:/image.tar \
-           -e GRYPE_REGISTRY_AUTH_USERNAME=${{ secrets.HARBOR_USERNAME }} \
-           -e GRYPE_REGISTRY_AUTH_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
            ${{ vars.GRYPE_IMAGE }} \
           /image.tar > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
       - name: Print Grype vulnerability summary
@@ -85,14 +89,18 @@ jobs:
       - name: Scan image with Trivy
         # GitLab: trivy image --scanners vuln,secret --output report.txt "$IMAGE_NAME"
         # GitHub: docker run trivy scanning image.tar directly from runner
+        # We scan image.tar directly instead - no Harbor pull, no credentials needed
+        # DECISION NEEDED: confirm with team lead - keep scanning local tar (current)
+        # or switch to pulling fresh from Harbor like GitLab did
+        # -e TRIVY_USERNAME=${{ secrets.HARBOR_USERNAME }} \
+        # -e TRIVY_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
+
         run: |
           SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
           docker run --rm \
            -v $(pwd)/image.tar:/image.tar \
            -v $(pwd)/trivy-cache:/root/.cache/trivy \
            -v $(pwd)/security_reports:/reports \
-           -e TRIVY_USERNAME=${{ secrets.HARBOR_USERNAME }} \
-           -e TRIVY_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
            ${{ vars.TRIVY_IMAGE }} \
            image \
            --scanners vuln,secret \
