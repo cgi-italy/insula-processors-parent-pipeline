@@ -9,16 +9,16 @@ jobs:
     uses: ./.github/workflows/scan_secrets.yml
     secrets: inherit
 
-  build_images:
+  build_image:
     needs: [scan_secrets]
-    uses: ./github/workflows/build_image.yml
+    uses: ./.github/workflows/build_image.yml
     secrets: inherit
 
   security:
     needs: [build_image]
-    uses: ./github/workflows/security.yml
+    uses: ./.github/workflows/security.yml
     with:
-      image_name: ${{ needs.build_image.output.image_name }}
+      image_name: ${{ needs.build_image.outputs.image_name }}
     secrets: inherit
 
   rename_image:
@@ -36,7 +36,7 @@ jobs:
     secrets: inherit
 
 
-    
+
     
     
     
