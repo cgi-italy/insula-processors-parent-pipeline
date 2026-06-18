@@ -11,8 +11,7 @@ on:
 jobs:
   publish_to_open_registry:
     runs-on:  ubuntu-latest
-    needs: [rename_image]
-    # GitLab: needs: -job: rename_image, artifact: true
+    
     environment: publish-approval
     # GitHub equivalent of GitLab's when: manual
     # second manual gate before publishing externally

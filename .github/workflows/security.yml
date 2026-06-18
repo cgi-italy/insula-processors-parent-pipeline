@@ -12,9 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     # run in parellel with trivy_scan 
-    needs: [build_image]
-    # GitLab: needs: -job: build_image
-    #                 artifacts: true
+    
     # GitHub: needs: [build_image] the download artifact explicitly
     steps:
       - name: Download image tar

@@ -1,0 +1,43 @@
+name: CI Pipeline
+
+on:
+  workflow_call:
+  
+
+jobs:
+  scan_secrets:
+    uses: ./.github/workflows/scan_secrets.yml
+    secrets: inherit
+
+  build_images:
+    needs: [scan_secrets]
+    uses: ./github/workflows/build_image.yml
+    secrets: inherit
+
+  security:
+    needs: [build_image]
+    uses: ./github/workflows/security.yml
+    with:
+      image_name: ${{ needs.build_image.output.image_name }}
+    secrets: inherit
+
+  rename_image:
+    needs: [build_image, security]
+    uses: ./.github/workflows/rename_image.yml
+    with: 
+      image_name: ${{ needs.build_image.output.image_name }}
+    secrets: inherit
+
+  publish_image:
+    needs: [rename_image]
+    uses: ./.github/workflows/publish_image.yml
+    with:
+      final_image_name: ${{ needs.rename_image.output.final_image_name }}
+    secrets: inherit
+
+
+    
+    
+    
+    
+  
