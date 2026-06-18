@@ -63,8 +63,8 @@ jobs:
         
       - name: Authenticate to Harbor
         run: |
-          mkdir -p /kaniko/.docker
-          echo '${{ secrets.DOCKER_AUTH_CONFIG }}' > /kaniko/.docker/config.json
+          mkdir -p ${{ github.workspace }}/kaniko-docker
+          echo '${{ secrets.DOCKER_AUTH_CONFIG }}' > ${{ github.workspace }}/kaniko-docker/config.json
 
       
       
@@ -75,7 +75,7 @@ jobs:
           IMAGE_NAME="${{ steps.set_image_name.outputs.image_name }}"
           docker run --rm \
             -v ${{ github.workspace }}:/workspace \
-            -v /kaniko/.docker/config.json:/kaniko/.docker/config.json \
+            -v ${{ github.workspace }}/kaniko-docker/config.json:/kaniko/.docker/config.json \
             ${{ vars.KANIKO_IMAGE }} \
             --context /workspace/code \
             --dockerfile /workspace/code/Dockerfile \
