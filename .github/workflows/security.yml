@@ -62,7 +62,6 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     # runs in parallel with grype_scan -same as GitLab secuirty stage
-    needs: [build_image]
 
     steps:
       - name: Download image tar
