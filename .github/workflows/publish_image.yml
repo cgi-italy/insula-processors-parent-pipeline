@@ -38,8 +38,8 @@ jobs:
           docker run --rm \
             quay.io/containers/skopeo:latest \
             copy \
-            --src-creds "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-            --dest-creds "${{ secrets.OPENREGISTRY_USERNAME }}:${{ secrets.OPENREGISTRY_PASSWORD }}" \
+            --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            --dest-creds '${{ secrets.OPENREGISTRY_USERNAME }}:${{ secrets.OPENREGISTRY_PASSWORD }}' \
             --dest-registry-token "" \
             docker://$FINAL_IMAGE_NAME \
             docker://$DEST_IMAGE
@@ -55,8 +55,8 @@ jobs:
           docker run --rm \
             quay.io/containers/skopeo:latest \
             copy \
-            --src-creds "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-            --dest-creds "${{ secrets.OPENREGISTRY_USERNAME }}:${{ secrets.OPENREGISTRY_PASSWORD }}" \
+            --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            --dest-creds '${{ secrets.OPENREGISTRY_USERNAME }}:${{ secrets.OPENREGISTRY_PASSWORD }}' \
             --dest-registry-token "" \
             docker://$FINAL_IMAGE_NAME \
             docker://$DEST_IMAGE_LATEST
