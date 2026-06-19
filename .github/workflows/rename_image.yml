@@ -40,7 +40,7 @@ jobs:
           docker run --rm \
             quay.io/containers/skopeo:latest \
             copy \
-            --src-creds "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
-            --dest-creds "${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}" \
+            --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            --dest-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
             docker://$SOURCE_IMAGE \
             docker://$FINAL_IMAGE_NAME
