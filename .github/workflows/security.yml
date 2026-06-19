@@ -100,9 +100,10 @@ jobs:
            -v $(pwd)/security_reports:/reports \
            ${{ vars.TRIVY_IMAGE }} \
            image \
+           --input /image.tar \
            --scanners vuln,secret \
            --output /reports/trivy_report_${SANITIZED_IMAGE_NAME}.txt \
-          /image.tar
+          
 
       - name: Upload Trivy report
         # GitLab: artifacts: paths: -security_reports/
