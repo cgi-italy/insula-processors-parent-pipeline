@@ -1,0 +1,17 @@
+name: Promote to Production
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: "The test image to promote to production"
+        required: true
+        type: string
+
+jobs:
+  publish_image:
+    uses: ./.github/workflows/publish_image.yml
+    with:
+      image_name: ${{ inputs.image_name }}
+    secrets: inherit
+    

@@ -3,8 +3,8 @@ name: Publish Image
 on:
   workflow_call:
     inputs:
-      final_image_name:
-        description: "The approved Harbor image name to publish (no -staging suffix)"
+      image_name:
+        description: "The test image to promote to production"
         required: true
         type: string
 
@@ -21,42 +21,34 @@ jobs:
         # GitLab: strips HARBOR_REGISTRY/HARBOR_PROJECT prefix to get IMAGE_PATH
         id: paths
         run: |
-          FINAL_IMAGE_NAME="${{ inputs.final_image_name }}"
+          SOURCE_IMAGE="${{ inputs.image_name }}"
           HARBOR_REGISTRY="${{ vars.HARBOR_REGISTRY }}"
           HARBOR_PROJECT="${{ vars.HARBOR_PROJECT }}"
-          IMAGE_PATH="${FINAL_IMAGE_NAME#$HARBOR_REGISTRY/$HARBOR_PROJECT/}"
-          echo "IMAGE_PATH=$IMAGE_PATH"
-          echo "image_path=$IMAGE_PATH" >> $GITHUB_OUTPUT
+          HARBOR_PROD_PROJECT="${{ vars.HARBOR_PROD_PROJECT }}"
+          REMAINDER="${SOURCE_IMAGE#$HARBOR_REGISTRY/$HARBOR_PROJECT/test/}"
+          DEST_IMAGE="$HARBOR_REGISTRY/$HARBOR_PROD_PROJECT/prod/$REMAINDER"
+          DEST_IMAGE_LATEST="${DEST_IMAGE%:*}:latest"
+          echo "dest_image=$DEST_IMAGE" >> $GITHUB_OUTPUT
+          echo "dest_image_latest=$DEST_IMAGE_LATEST" >> $GITHUB_OUTPUT
     
       - name: Push versioned image to OpenRegistry
         # GitLab: skopeo copy ... docker://$FINAL_IMAGE_NAME docker://$DEST_IMAGE
         run: |
-          FINAL_IMAGE_NAME="${{ inputs.final_image_name }}"
-          IMAGE_PATH="${{ steps.paths.outputs.image_path }}"
-          DEST_IMAGE="${{ vars.OPENREGISTRY_URL }}/$IMAGE_PATH"
-          echo "Tagging image for export in final repo: $DEST_IMAGE"
           docker run --rm \
             quay.io/containers/skopeo:latest \
             copy \
             --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
-            --dest-creds '${{ secrets.OPENREGISTRY_USERNAME }}:${{ secrets.OPENREGISTRY_PASSWORD }}' \
-            --dest-registry-token "" \
-            docker://$FINAL_IMAGE_NAME \
-            docker://$DEST_IMAGE
+            --dest-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            docker://${{ inputs.image_name }} \
+            docker://${{ steps.paths.outputs.dest_image }}
 
       - name: Push latest tag to OpenRegistry
         # GitLab: strips tag, appends :latest, copies agian
         run: |
-          FINAL_IMAGE_NAME="${{ inputs.final_image_name }}"
-          IMAGE_PATH="${{ steps.paths.outputs.image_path }}"
-          IMAGE_PATH_LATEST="${IMAGE_PATH%:*}:latest"
-          DEST_IMAGE_LATEST="${{ vars.OPENREGISTRY_URL }}/$IMAGE_PATH_LATEST"
-          echo "Tagging image latest for export in final repo: $DEST_IMAGE_LATEST"
           docker run --rm \
             quay.io/containers/skopeo:latest \
             copy \
             --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
-            --dest-creds '${{ secrets.OPENREGISTRY_USERNAME }}:${{ secrets.OPENREGISTRY_PASSWORD }}' \
-            --dest-registry-token "" \
-            docker://$FINAL_IMAGE_NAME \
-            docker://$DEST_IMAGE_LATEST
+            --dest-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            docker://${{ inputs.image_name }} \
+            docker://${{ steps.paths.outputs.dest_image_latest }}
