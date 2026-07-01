@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         # ← checks out the child repo code onto the ubuntu runner
 
       - name: Set image name
@@ -79,18 +79,5 @@ jobs:
             ${{ vars.KANIKO_IMAGE }} \
             --context /workspace/code \
             --dockerfile /workspace/code/Dockerfile \
-            --destination $IMAGE_NAME \
-            --tarPath /workspace/image.tar 
-            
-      - name: Verify image tar was created
-        # Gitlab: ls -lah to confirm image.tar exists
-        run: ls -lah ${{ github.workspace }}/image.tar
+            --destination $IMAGE_NAME \ 
       
-      - name: Upload image tar for security scanning
-        # GitLab: artifacts: paths: -image.tar (automatic)
-        # GitHub: must explicitly upload so security job can download it
-        uses: actions/upload-artifact@v4
-        with:
-          name: docker-image-tar
-          path: ${{ github.workspace }}/image.tar
-          retention-days: 1

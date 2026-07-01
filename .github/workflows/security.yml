@@ -15,12 +15,15 @@ jobs:
     
     # GitHub: needs: [build_image] the download artifact explicitly
     steps:
-      - name: Download image tar
-        # GitLab: image.tar automatically avilable via artifacts
-        # GitHub: must explicitly download from build_image job
-        uses: actions/download-artifact@v4
-        with: 
-          name: docker-image-tar
+      - name: Pull image from Harbor
+        # GitLab: docker pull "$IMAGE_NAME"
+        # GitHub: docker pull "$IMAGE_NAME"
+        run: |
+          docker login ${{ vars.HARBOR_REGISTRY }} \
+            -u '${{ secrets.HARBOR_USERNAME }}' \
+            -p '${{ secrets.HARBOR_PASSWORD }}' 
+          docker pull "${{ inputs.image_name }}"
+         
       
       - name: Create Reports directory
         run: mkdir -p security_reports
@@ -37,9 +40,9 @@ jobs:
         run: |
           SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
           docker run --rm \
-           -v $(pwd)/image.tar:/image.tar \
+           -v /var/run/docker.sock:/var/run/docker.sock \
            ${{ vars.GRYPE_IMAGE }} \
-          /image.tar > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
+          docker:${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
       - name: Print Grype vulnerability summary
         # GitLab: cat report | grep -E 'Critical|High|Medium|Low' | sort | uniq -c
         run: |
@@ -52,7 +55,7 @@ jobs:
       - name: Upload Grype report
         # GitLab: artifacts: paths: -security_reports/
         # GitHub: must explicitly upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: grype-report 
           path: security_reports/
@@ -64,12 +67,15 @@ jobs:
     # runs in parallel with grype_scan -same as GitLab secuirty stage
 
     steps:
-      - name: Download image tar
-        # GitLab: image.tar automatically avilable via artifacts
-        # GitHub: must explicitly download from build_image job
-        uses: actions/download-artifact@v4
-        with: 
-          name: docker-image-tar
+      - name: Pull image from Harbor
+        # GitLab: docker pull "$IMAGE_NAME"
+        # GitHub: docker pull "$IMAGE_NAME"
+        run: |
+          docker login ${{ vars.HARBOR_REGISTRY }} \
+            -u '${{ secrets.HARBOR_USERNAME }}' \
+            -p '${{ secrets.HARBOR_PASSWORD }}' 
+          docker pull "${{ inputs.image_name }}"
+
 
       - name: Create Reports directory
         run: mkdir -p security_reports
@@ -95,20 +101,20 @@ jobs:
         run: |
           SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
           docker run --rm \
-           -v $(pwd)/image.tar:/image.tar \
+           -v /var/run/docker.sock:/var/run/docker.sock \
            -v $(pwd)/trivy-cache:/root/.cache/trivy \
            -v $(pwd)/security_reports:/reports \
            ${{ vars.TRIVY_IMAGE }} \
            image \
-           --input /image.tar \
+           ${{ inputs.image_name }}  \
            --scanners vuln,secret \
-           --output /reports/trivy_report_${SANITIZED_IMAGE_NAME}.txt \
+           --output /reports/trivy_report_${SANITIZED_IMAGE_NAME}.txt 
           
 
       - name: Upload Trivy report
         # GitLab: artifacts: paths: -security_reports/
         # GitHub: must explicitly upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: trivy-report
           path: security_reports/
