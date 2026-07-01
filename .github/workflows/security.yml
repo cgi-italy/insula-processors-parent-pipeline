@@ -31,6 +31,7 @@ jobs:
         run: |
           SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
           docker run --rm \
+           -e DOCKER_CONFIG=/docker-config \
            -v $(pwd)/docker-config:/root/.docker \
            -v $(pwd)/grype-cache:/.cache/grype \
            ${{ vars.GRYPE_IMAGE }} \
