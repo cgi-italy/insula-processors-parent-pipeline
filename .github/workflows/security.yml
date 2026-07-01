@@ -19,6 +19,14 @@ jobs:
       - name: Create Reports directory
         run: mkdir -p security_reports
 
+      - name: Create Grype registry config
+        run: |
+          echo 'registry:' > $(pwd)/grype-registry.yaml
+          echo '  auth:' >> $(pwd)/grype-registry.yaml
+          echo '    - authority: ${{ vars.HARBOR_REGISTRY }}' >> $(pwd)/grype-registry.yaml
+          echo '      username: ${{ secrets.HARBOR_USERNAME }}' >> $(pwd)/grype-registry.yaml
+          echo '      password: ${{ secrets.HARBOR_PASSWORD }}' >> $(pwd)/grype-registry.yaml
+
       - name: Scan image with Grype
         # GitLab: /grype "$IMAGE_NAME" > grype_report.txt
         # GitHub: docker run grype sccanning image.tar directly from runner
@@ -38,15 +46,7 @@ jobs:
           ${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
 
 
-      - name: Create Grype registry config
-        run: |
-          echo 'registry:' > $(pwd)/grype-registry.yaml
-          echo '  auth:' >> $(pwd)/grype-registry.yaml
-          echo '    - authority: ${{ vars.HARBOR_REGISTRY }}' >> $(pwd)/grype-registry.yaml
-          echo '      username: ${{ secrets.HARBOR_USERNAME }}' >> $(pwd)/grype-registry.yaml
-          echo '      password: ${{ secrets.HARBOR_PASSWORD }}' >> $(pwd)/grype-registry.yaml
-
-          
+         
 
       - name: Print Grype vulnerability summary
         # GitLab: cat report | grep -E 'Critical|High|Medium|Low' | sort | uniq -c
