@@ -40,12 +40,12 @@ jobs:
 
       - name: Create Grype registry config
         run: |
-          cat > $(pwd)/grype-registry.yaml << 'EOF'
-          registry:
-            auth:
-              - authority: "${{ vars.HARBOR_REGISTRY }}"
-                username: "${{ secrets.HARBOR_USERNAME }}"
-                password: "${{ secrets.HARBOR_PASSWORD }}"
+          echo 'registry:' > $(pwd)/grype-registry.yaml
+          echo '  auth:' >> $(pwd)/grype-registry.yaml
+          echo '    - authority: ${{ vars.HARBOR_REGISTRY }}' >> $(pwd)/grype-registry.yaml
+          echo '      username: ${{ secrets.HARBOR_USERNAME }}' >> $(pwd)/grype-registry.yaml
+          echo '      password: ${{ secrets.HARBOR_PASSWORD }}' >> $(pwd)/grype-registry.yaml
+
           
 
       - name: Print Grype vulnerability summary
