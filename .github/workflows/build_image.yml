@@ -79,5 +79,5 @@ jobs:
             ${{ vars.KANIKO_IMAGE }} \
             --context /workspace/code \
             --dockerfile /workspace/code/Dockerfile \
-            --destination $IMAGE_NAME \ 
+            --destination $IMAGE_NAME  
       
