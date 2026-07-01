@@ -15,16 +15,7 @@ jobs:
     
     # GitHub: needs: [build_image] the download artifact explicitly
     steps:
-      - name: Pull image from Harbor
-        # GitLab: docker pull "$IMAGE_NAME"
-        # GitHub: docker pull "$IMAGE_NAME"
-        run: |
-          docker login ${{ vars.HARBOR_REGISTRY }} \
-            -u '${{ secrets.HARBOR_USERNAME }}' \
-            -p '${{ secrets.HARBOR_PASSWORD }}' 
-          docker pull "${{ inputs.image_name }}"
-         
-      
+
       - name: Create Reports directory
         run: mkdir -p security_reports
 
@@ -40,9 +31,17 @@ jobs:
         run: |
           SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
           docker run --rm \
-           -v /var/run/docker.sock:/var/run/docker.sock \
+           -v $(pwd)/docker-config:/root/.docker \
+           -v $(pwd)/grype-cache:/.cache/grype \
            ${{ vars.GRYPE_IMAGE }} \
-          docker:${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
+          ${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
+
+
+      - name: Authenticate to Harbor
+        run: |
+          mkdir -p $(pwd)/docker-config
+          echo '${{ secrets.DOCKER_AUTH_CONFIG }}' > $(pwd)/docker-config/config.json
+
       - name: Print Grype vulnerability summary
         # GitLab: cat report | grep -E 'Critical|High|Medium|Low' | sort | uniq -c
         run: |
@@ -67,14 +66,6 @@ jobs:
     # runs in parallel with grype_scan -same as GitLab secuirty stage
 
     steps:
-      - name: Pull image from Harbor
-        # GitLab: docker pull "$IMAGE_NAME"
-        # GitHub: docker pull "$IMAGE_NAME"
-        run: |
-          docker login ${{ vars.HARBOR_REGISTRY }} \
-            -u '${{ secrets.HARBOR_USERNAME }}' \
-            -p '${{ secrets.HARBOR_PASSWORD }}' 
-          docker pull "${{ inputs.image_name }}"
 
 
       - name: Create Reports directory
@@ -101,14 +92,16 @@ jobs:
         run: |
           SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
           docker run --rm \
-           -v /var/run/docker.sock:/var/run/docker.sock \
+           -e TRIVY_USERNAME='${{ secrets.HARBOR_USERNAME }}' \
+           -e TRIVY_PASSWORD='${{ secrets.HARBOR_PASSWORD }}' \
            -v $(pwd)/trivy-cache:/root/.cache/trivy \
            -v $(pwd)/security_reports:/reports \
            ${{ vars.TRIVY_IMAGE }} \
            image \
-           ${{ inputs.image_name }}  \
+           ${{ inputs.image_name }} \
            --scanners vuln,secret \
-           --output /reports/trivy_report_${SANITIZED_IMAGE_NAME}.txt 
+           --output /reports/trivy_report_${SANITIZED_IMAGE_NAME}.txt
+
           
 
       - name: Upload Trivy report
