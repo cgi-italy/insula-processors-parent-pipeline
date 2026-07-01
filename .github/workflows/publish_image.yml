@@ -31,7 +31,7 @@ jobs:
           echo "dest_image=$DEST_IMAGE" >> $GITHUB_OUTPUT
           echo "dest_image_latest=$DEST_IMAGE_LATEST" >> $GITHUB_OUTPUT
     
-      - name: Push versioned image to OpenRegistry
+      - name: Push versioned image to Prod
         # GitLab: skopeo copy ... docker://$FINAL_IMAGE_NAME docker://$DEST_IMAGE
         run: |
           docker run --rm \
@@ -42,7 +42,7 @@ jobs:
             docker://${{ inputs.image_name }} \
             docker://${{ steps.paths.outputs.dest_image }}
 
-      - name: Push latest tag to OpenRegistry
+      - name: Push latest tag to Prod
         # GitLab: strips tag, appends :latest, copies agian
         run: |
           docker run --rm \
