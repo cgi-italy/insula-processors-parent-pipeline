@@ -42,7 +42,7 @@ jobs:
            # GitLab: IMAGE_NAME="$HARBOR_REGISTRY/$HARBOR_PROJECT/$TENANT_NAME/$TENANT_NAME/$APP_NAME:$STAGING_TAG"
            HARBOR_REGISTRY="${{ vars.HARBOR_REGISTRY }}"
            HARBOR_PROJECT="${{ vars.HARBOR_PROJECT }}"
-           IMAGE_PREFIX="test/$TENANT_NAME/$TENANT_NAME/$APP_NAME"
+           IMAGE_PREFIX="test/$APP_NAME"
            IMAGE_NAME="$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE_PREFIX:$TAG"
            echo "IMAGE_NAME=$IMAGE_NAME"
            # Set the output so downstream jobs can read IMAGE_NAME
