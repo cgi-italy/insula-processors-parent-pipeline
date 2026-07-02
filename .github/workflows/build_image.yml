@@ -36,8 +36,8 @@ jobs:
            TAG="${TAG:0:8}"
            # Build full image name - same structure as GitLab
            # GitLab: IMAGE_NAME="$HARBOR_REGISTRY/$HARBOR_PROJECT/$TENANT_NAME/$TENANT_NAME/$APP_NAME:$STAGING_TAG"
-           HARBOR_REGISTRY="${{ secrets.HARBOR_REGISTRY }}"
-           HARBOR_PROJECT="${{ secrets.HARBOR_PROJECT }}"
+           HARBOR_REGISTRY="${{ vars.HARBOR_REGISTRY }}"
+           HARBOR_PROJECT="${{ vars.HARBOR_PROJECT }}"
            IMAGE_PREFIX="test/$APP_NAME"
            IMAGE_NAME="$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE_PREFIX:$TAG"
            # Set the output so downstream jobs can read IMAGE_NAME
