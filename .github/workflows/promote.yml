@@ -15,7 +15,14 @@ jobs:
           RESPONSE=$(curl -s \
             -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROJECT }}/repositories/test%2F${APP_NAME}/artifacts?sort=-push_time&page=1&page_size=1")
-          TAG=$(echo "$RESPONSE" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data[0]['tags'][0]['name'])")
+          TAG=$(echo "$RESPONSE" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if not isinstance(data, list) or len(data) == 0:
+    print('Harbor API error or empty repo:', data, file=sys.stderr)
+    sys.exit(1)
+print(data[0]['tags'][0]['name'])
+")
           echo "image_name=${{ vars.HARBOR_REGISTRY }}/${{ vars.HARBOR_PROJECT }}/test/${APP_NAME}:${TAG}" >> $GITHUB_OUTPUT
 
   publish_image:
