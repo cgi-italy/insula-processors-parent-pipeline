@@ -16,6 +16,17 @@ jobs:
     # GitHub: needs: [build_image] the download artifact explicitly
     steps:
 
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
@@ -64,6 +75,17 @@ jobs:
     # runs in parallel with grype_scan -same as GitLab secuirty stage
 
     steps:
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
       
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
