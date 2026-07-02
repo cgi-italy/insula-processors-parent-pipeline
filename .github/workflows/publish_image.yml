@@ -9,7 +9,7 @@ on:
         type: string
 
 jobs:
-  publish_to_open_registry:
+  publish_to_harbor:
     runs-on:  ubuntu-latest
     
     environment: publish-approval
@@ -26,14 +26,12 @@ jobs:
         id: paths
         run: |
           SOURCE_IMAGE="${{ inputs.image_name }}"
-          HARBOR_REGISTRY="${{ secrets.HARBOR_REGISTRY }}"
-          HARBOR_PROJECT="${{ secrets.HARBOR_PROJECT }}"
-          HARBOR_PROD_PROJECT="${{ secrets.HARBOR_PROD_PROJECT }}"
+          HARBOR_REGISTRY="${{ vars.HARBOR_REGISTRY }}"
+          HARBOR_PROJECT="${{ vars.HARBOR_PROJECT }}"
+          HARBOR_PROD_PROJECT="${{ vars.HARBOR_PROD_PROJECT }}"
           REMAINDER="${SOURCE_IMAGE#$HARBOR_REGISTRY/$HARBOR_PROJECT/test/}"
           DEST_IMAGE="$HARBOR_REGISTRY/$HARBOR_PROD_PROJECT/prod/$REMAINDER"
           DEST_IMAGE_LATEST="${DEST_IMAGE%:*}:latest"
-          echo "::add-mask::$DEST_IMAGE"
-          echo "::add-mask::$DEST_IMAGE_LATEST"
           echo "dest_image=$DEST_IMAGE" >> $GITHUB_OUTPUT
           echo "dest_image_latest=$DEST_IMAGE_LATEST" >> $GITHUB_OUTPUT
     
