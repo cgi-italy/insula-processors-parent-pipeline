@@ -26,9 +26,9 @@ jobs:
         id: paths
         run: |
           SOURCE_IMAGE="${{ inputs.image_name }}"
-          HARBOR_REGISTRY="${{ vars.HARBOR_REGISTRY }}"
-          HARBOR_PROJECT="${{ vars.HARBOR_PROJECT }}"
-          HARBOR_PROD_PROJECT="${{ vars.HARBOR_PROD_PROJECT }}"
+          HARBOR_REGISTRY="${{ secrets.HARBOR_REGISTRY }}"
+          HARBOR_PROJECT="${{ secrets.HARBOR_PROJECT }}"
+          HARBOR_PROD_PROJECT="${{ secrets.HARBOR_PROD_PROJECT }}"
           REMAINDER="${SOURCE_IMAGE#$HARBOR_REGISTRY/$HARBOR_PROJECT/test/}"
           DEST_IMAGE="$HARBOR_REGISTRY/$HARBOR_PROD_PROJECT/prod/$REMAINDER"
           DEST_IMAGE_LATEST="${DEST_IMAGE%:*}:latest"
@@ -41,7 +41,7 @@ jobs:
         # GitLab: skopeo copy ... docker://$FINAL_IMAGE_NAME docker://$DEST_IMAGE
         run: |
           docker run --rm \
-            quay.io/containers/skopeo:latest \
+            ${{ secrets.SKOPEO_IMAGE }} \
             copy \
             --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
             --dest-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
@@ -52,7 +52,7 @@ jobs:
         # GitLab: strips tag, appends :latest, copies agian
         run: |
           docker run --rm \
-            quay.io/containers/skopeo:latest \
+            ${{ secrets.SKOPEO_IMAGE }} \
             copy \
             --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
             --dest-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \

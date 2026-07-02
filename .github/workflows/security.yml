@@ -37,7 +37,7 @@ jobs:
         run: |
           echo 'registry:' > $(pwd)/grype-registry.yaml
           echo '  auth:' >> $(pwd)/grype-registry.yaml
-          echo '    - authority: ${{ vars.HARBOR_REGISTRY }}' >> $(pwd)/grype-registry.yaml
+          echo '    - authority: ${{ secrets.HARBOR_REGISTRY }}' >> $(pwd)/grype-registry.yaml
           echo '      username: ${{ secrets.HARBOR_USERNAME }}' >> $(pwd)/grype-registry.yaml
           echo '      password: ${{ secrets.HARBOR_PASSWORD }}' >> $(pwd)/grype-registry.yaml
 
@@ -55,7 +55,7 @@ jobs:
           docker run --rm \
            -v $(pwd)/grype-registry.yaml:/grype-registry.yaml \
            -v $(pwd)/grype-cache:/.cache/grype \
-           ${{ vars.GRYPE_IMAGE }} \
+           ${{ secrets.GRYPE_IMAGE }} \
            --config /grype-registry.yaml \
           ${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
 
@@ -100,7 +100,7 @@ jobs:
         run: |
           docker run --rm \
            -v $(pwd)/trivy-cache:/root/.cache/trivy \
-           ${{ vars.TRIVY_IMAGE }} \
+           ${{ secrets.TRIVY_IMAGE }} \
            image --download-db-only
        
       - name: Scan image with Trivy
@@ -119,7 +119,7 @@ jobs:
            -e TRIVY_PASSWORD='${{ secrets.HARBOR_PASSWORD }}' \
            -v $(pwd)/trivy-cache:/root/.cache/trivy \
            -v $(pwd)/security_reports:/reports \
-           ${{ vars.TRIVY_IMAGE }} \
+           ${{ secrets.TRIVY_IMAGE }} \
            image \
            ${{ inputs.image_name }} \
            --scanners vuln,secret \
