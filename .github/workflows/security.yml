@@ -16,6 +16,9 @@ jobs:
     # GitHub: needs: [build_image] the download artifact explicitly
     steps:
 
+      - name: Mask sensitive values
+        run: echo "::add-mask::${{ inputs.image_name }}"
+
       - name: Create Reports directory
         run: mkdir -p security_reports
 
@@ -46,17 +49,6 @@ jobs:
           ${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
 
 
-         
-
-      - name: Print Grype vulnerability summary
-        # GitLab: cat report | grep -E 'Critical|High|Medium|Low' | sort | uniq -c
-        run: |
-          SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
-          cat security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt \
-            | grep -E 'Critical|High|Medium|Low' \
-            | sort \
-            | uniq -c \
-            | awk '{print $2, $1, "vulnerabilities"}'
       - name: Upload Grype report
         # GitLab: artifacts: paths: -security_reports/
         # GitHub: must explicitly upload
@@ -72,6 +64,9 @@ jobs:
     # runs in parallel with grype_scan -same as GitLab secuirty stage
 
     steps:
+      
+      - name: Mask sensitive values
+        run: echo "::add-mask::${{ inputs.image_name }}"
 
 
       - name: Create Reports directory
