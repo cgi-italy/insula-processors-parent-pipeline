@@ -17,6 +17,10 @@ jobs:
     # second manual gate before publishing externally
     
     steps:
+
+      - name: Mask sensitive values
+        run: echo "::add-mask::${{ inputs.image_name }}"
+
       - name: Compute destination image paths
         # GitLab: strips HARBOR_REGISTRY/HARBOR_PROJECT prefix to get IMAGE_PATH
         id: paths
@@ -28,6 +32,8 @@ jobs:
           REMAINDER="${SOURCE_IMAGE#$HARBOR_REGISTRY/$HARBOR_PROJECT/test/}"
           DEST_IMAGE="$HARBOR_REGISTRY/$HARBOR_PROD_PROJECT/prod/$REMAINDER"
           DEST_IMAGE_LATEST="${DEST_IMAGE%:*}:latest"
+          echo "::add-mask::$DEST_IMAGE"
+          echo "::add-mask::$DEST_IMAGE_LATEST"
           echo "dest_image=$DEST_IMAGE" >> $GITHUB_OUTPUT
           echo "dest_image_latest=$DEST_IMAGE_LATEST" >> $GITHUB_OUTPUT
     
