@@ -14,7 +14,7 @@ jobs:
           APP_NAME="${REPO##*/}"
           RESPONSE=$(curl -s \
             -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
-            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROJECT }}/repositories/test%2F${APP_NAME}/artifacts?sort=-push_time&page=1&page_size=1")
+            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROJECT }}/repositories/test%252F${APP_NAME}/artifacts?sort=-push_time&page=1&page_size=1")
           echo "Harbor API response: $RESPONSE"
           TAG=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(1) if not isinstance(d,list) or not d else print(d[0]['tags'][0]['name'])")
           echo "image_name=${{ vars.HARBOR_REGISTRY }}/${{ vars.HARBOR_PROJECT }}/test/${APP_NAME}:${TAG}" >> $GITHUB_OUTPUT
