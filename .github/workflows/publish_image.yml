@@ -27,11 +27,10 @@ jobs:
           APP_NAME="${REPO##*/}"
           TAG="${{ inputs.image_name }}"
           TAG="${TAG##*:}"
-          AUTH=$(echo -n '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' | base64 | tr -d '\n')
           curl -s -X POST \
+            -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts?from=${{ vars.HARBOR_PROJECT }}%2Ftest%2F${APP_NAME}%3A${TAG}" \
-            -H 'accept: application/json' \
-            -H "Authorization: Basic ${AUTH}"
+            -H 'accept: application/json'
 
       - name: Tag copied image as latest via Harbor API
         run: |
@@ -39,14 +38,14 @@ jobs:
           APP_NAME="${REPO##*/}"
           TAG="${{ inputs.image_name }}"
           TAG="${TAG##*:}"
-          AUTH=$(echo -n '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' | base64 | tr -d '\n')
           curl -s -X DELETE \
+            -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/latest/tags/latest" \
-            -H "Authorization: Basic ${AUTH}" || true
+            -H 'accept: application/json' || true
           curl -s -X POST \
+            -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/${TAG}/tags" \
             -H 'accept: application/json' \
             -H 'Content-Type: application/json' \
-            -H "Authorization: Basic ${AUTH}" \
             -d '{"name":"latest"}'
 
