@@ -10,49 +10,39 @@ on:
 
 jobs:
   publish_to_harbor:
-    runs-on:  ubuntu-latest
+    runs-on: ubuntu-latest
     
     environment: publish-approval
     # GitHub equivalent of GitLab's when: manual
     # second manual gate before publishing externally
-    
-    steps:
 
+    steps:
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-      - name: Compute destination image paths
-        # GitLab: strips HARBOR_REGISTRY/HARBOR_PROJECT prefix to get IMAGE_PATH
-        id: paths
+      - name: Copy versioned image to Prod via Harbor API
+        # Harbor server-side copy - no image traffic through runner
         run: |
-          SOURCE_IMAGE="${{ inputs.image_name }}"
-          HARBOR_REGISTRY="${{ vars.HARBOR_REGISTRY }}"
-          HARBOR_PROJECT="${{ vars.HARBOR_PROJECT }}"
-          HARBOR_PROD_PROJECT="${{ vars.HARBOR_PROD_PROJECT }}"
-          REMAINDER="${SOURCE_IMAGE#$HARBOR_REGISTRY/$HARBOR_PROJECT/test/}"
-          DEST_IMAGE="$HARBOR_REGISTRY/$HARBOR_PROD_PROJECT/prod/$REMAINDER"
-          DEST_IMAGE_LATEST="${DEST_IMAGE%:*}:latest"
-          echo "dest_image=$DEST_IMAGE" >> $GITHUB_OUTPUT
-          echo "dest_image_latest=$DEST_IMAGE_LATEST" >> $GITHUB_OUTPUT
-    
-      - name: Push versioned image to Prod
-        # GitLab: skopeo copy ... docker://$FINAL_IMAGE_NAME docker://$DEST_IMAGE
-        run: |
-          docker run --rm \
-            ${{ secrets.SKOPEO_IMAGE }} \
-            copy \
-            --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
-            --dest-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
-            docker://${{ inputs.image_name }} \
-            docker://${{ steps.paths.outputs.dest_image }}
+          REPO="${{ github.repository }}"
+          APP_NAME="${REPO##*/}"
+          TAG="${{ inputs.image_name }}"
+          TAG="${TAG##*:}"
+          AUTH=$(echo -n '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' | base64 | tr -d '\n')
+          curl -s -X POST \
+            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts?from=${{ vars.HARBOR_PROJECT }}%2Ftest%2F${APP_NAME}%3A${TAG}" \
+            -H 'accept: application/json' \
+            -H "Authorization: Basic ${AUTH}"
 
-      - name: Push latest tag to Prod
-        # GitLab: strips tag, appends :latest, copies agian
+      - name: Tag copied image as latest via Harbor API
         run: |
-          docker run --rm \
-            ${{ secrets.SKOPEO_IMAGE }} \
-            copy \
-            --src-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
-            --dest-creds '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
-            docker://${{ inputs.image_name }} \
-            docker://${{ steps.paths.outputs.dest_image_latest }}
+          REPO="${{ github.repository }}"
+          APP_NAME="${REPO##*/}"
+          TAG="${{ inputs.image_name }}"
+          TAG="${TAG##*:}"
+          AUTH=$(echo -n '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' | base64 | tr -d '\n')
+          curl -s -X POST \
+            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/${TAG}/tags" \
+            -H 'accept: application/json' \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Basic ${AUTH}" \
+            -d '{"name":"latest"}'
