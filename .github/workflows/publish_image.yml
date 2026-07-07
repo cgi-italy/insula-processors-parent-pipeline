@@ -40,9 +40,13 @@ jobs:
           TAG="${{ inputs.image_name }}"
           TAG="${TAG##*:}"
           AUTH=$(echo -n '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' | base64 | tr -d '\n')
+          curl -s -X DELETE \
+            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/latest/tags/latest" \
+            -H "Authorization: Basic ${AUTH}" || true
           curl -s -X POST \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/${TAG}/tags" \
             -H 'accept: application/json' \
             -H 'Content-Type: application/json' \
             -H "Authorization: Basic ${AUTH}" \
             -d '{"name":"latest"}'
+
