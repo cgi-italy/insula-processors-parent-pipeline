@@ -28,7 +28,7 @@ jobs:
           TAG="${{ inputs.image_name }}"
           TAG="${TAG##*:}"
           curl -s -X POST \
-            -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            -u '${{ secrets.HARBOR_ADMIN_USERNAME }}:${{ secrets.HARBOR_ADMIN_PASSWORD }}' \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts?from=${{ vars.HARBOR_PROJECT }}%2Ftest%2F${APP_NAME}%3A${TAG}" \
             -H 'accept: application/json'
 
@@ -39,13 +39,12 @@ jobs:
           TAG="${{ inputs.image_name }}"
           TAG="${TAG##*:}"
           curl -s -X DELETE \
-            -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            -u '${{ secrets.HARBOR_ADMIN_USERNAME }}:${{ secrets.HARBOR_ADMIN_PASSWORD }}' \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/latest/tags/latest" \
             -H 'accept: application/json' || true
           curl -s -X POST \
-            -u '${{ secrets.HARBOR_USERNAME }}:${{ secrets.HARBOR_PASSWORD }}' \
+            -u '${{ secrets.HARBOR_ADMIN_USERNAME }}:${{ secrets.HARBOR_ADMIN_PASSWORD }}' \
             "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/${TAG}/tags" \
             -H 'accept: application/json' \
             -H 'Content-Type: application/json' \
             -d '{"name":"latest"}'
-
