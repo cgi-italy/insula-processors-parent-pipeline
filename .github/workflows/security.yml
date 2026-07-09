@@ -1,13 +1,15 @@
 name: Security scan
 
-# Reusable workflow. Pulls the staging SWR image ONCE, then scans it with both
-# Trivy and Grype from the local Docker daemon. A shared final gate BLOCKS the
-# pipeline on HIGH or CRITICAL findings from either scanner, so a failing scan
-# prevents the downstream publish job from running.
+# Reusable workflow. Scans the staging SWR image with both Trivy and Grype,
+# each streaming layers directly from the registry (no docker pull / no daemon
+# tar export). A shared final gate BLOCKS the pipeline on HIGH or CRITICAL
+# findings from either scanner, so a failing scan prevents the downstream
+# publish job from running.
 #
 # Single job (not two parallel jobs) on purpose: the scan is disk-bound, not
-# CPU-bound. One image pull + one disk cleanup serves both scanners, avoids
-# pulling the (large) image twice, and prevents "no space left on device".
+# CPU-bound. One disk cleanup serves both scanners and prevents
+# "no space left on device". Registry-streaming keeps disk use to the layer
+# cache instead of a full image tar.
 on:
   workflow_call:
     inputs:
@@ -28,11 +30,10 @@ jobs:
         run: echo "::add-mask::${{ inputs.image_name }}"
 
       - name: Free disk space
-        # Grype's scan-action exports the full image tar under /var/lib/docker and
-        # /tmp; large images exhaust the default runner disk. Deleting the unused
-        # preinstalled toolchains via rm -rf is fast (seconds) and frees ~25GB.
-        # We intentionally skip apt-based "large-packages" removal (slow) - the
-        # rm below is enough.
+        # Both scanners still write layer contents to their cache; large images
+        # can exhaust the default runner disk. Deleting the unused preinstalled
+        # toolchains via rm -rf is fast (seconds) and frees ~25GB. We skip the
+        # apt-based "large-packages" removal (slow) - the rm below is enough.
         run: |
           echo "Before:"; df -h /
           sudo rm -rf \
@@ -50,11 +51,6 @@ jobs:
           registry: ${{ inputs.swr_registry }}
           username: ${{ secrets.SWR_USERNAME }}
           password: ${{ secrets.SWR_PASSWORD }}
-
-      - name: Pull image once
-        # Both scanners read from the local Docker daemon below, so the image is
-        # downloaded from the registry a single time here.
-        run: docker pull "${{ inputs.image_name }}"
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
@@ -103,6 +99,11 @@ jobs:
       - name: Scan image with Grype
         uses: anchore/scan-action@v7.4.0
         id: grype
+        env:
+          # Stream layers straight from the registry instead of exporting a full
+          # image tar from the Docker daemon (the "no space left on device" path).
+          # Auth comes from the docker/login-action config written above.
+          GRYPE_DEFAULT_IMAGE_PULL_SOURCE: registry
         with:
           image: ${{ inputs.image_name }}
           fail-build: false
