@@ -84,3 +84,8 @@ jobs:
           tags: ${{ steps.set_image_name.outputs.image_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # SWR rejects the OCI image index that Buildx attestations produce
+          # ("Invalid image, fail to parse manifest.json"). Disable provenance
+          # and SBOM so a single Docker schema2 manifest is pushed instead.
+          provenance: false
+          sbom: false
