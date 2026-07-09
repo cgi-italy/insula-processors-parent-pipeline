@@ -7,11 +7,11 @@ on:
   workflow_call:
     inputs:
       image_name:
-        description: "Full SWR staging image name to scan"
+        description: "Full staging image name to scan"
         required: true
         type: string
       swr_registry:
-        description: "OTC SWR registry hostname (for login)"
+        description: "Registry hostname (for login)"
         required: true
         type: string
 
@@ -23,7 +23,7 @@ jobs:
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-      - name: Log in to OTC SWR
+      - name: Log in to Registry
         uses: docker/login-action@v4.4.0
         with:
           registry: ${{ inputs.swr_registry }}
@@ -47,7 +47,7 @@ jobs:
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-      - name: Log in to OTC SWR
+      - name: Log in to Registry
         uses: docker/login-action@v4.4.0
         with:
           registry: ${{ inputs.swr_registry }}

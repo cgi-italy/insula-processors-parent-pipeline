@@ -7,11 +7,11 @@ on:
   workflow_call:
     inputs:
       image_name:
-        description: "Full SWR staging image name to promote (with :sha8 tag)"
+        description: "Full staging image name to promote (with :sha8 tag)"
         required: true
         type: string
       swr_prod_org:
-        description: "SWR namespace for published images"
+        description: "Namespace for published images"
         required: true
         type: string
 
