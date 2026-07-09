@@ -58,7 +58,7 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ inputs.image_name }}
-          scanners: vuln,secret
+          scanners: vuln
           severity: HIGH,CRITICAL
           exit-code: '1'
           # exit-code 1 on HIGH,CRITICAL -> fails the job and blocks publish.

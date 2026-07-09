@@ -10,10 +10,10 @@
 #                                then optionally seed repo-level secrets/vars and
 #                                collaborators.
 #
-# NOTE ON CONFIG: the pipeline reads secrets/vars from the CALLER repo or the
-# cgi-italy org. Prefer setting them ONCE at org level; then a new repo needs no
-# per-repo secrets at all. This script's `create` seeding is only for per-repo
-# overrides. See credentials.txt.
+# NOTE ON CONFIG: the pipeline reads secrets from the CALLER repo and the
+# cgi-italy org, never from parent-pipeline. The 4 required secrets (see
+# parent-pipeline README.md) are set once at the cgi-italy org level, so a new
+# repo needs no secret setup.
 # ------------------------------------------------------------------------------
 set -eu
 
@@ -73,7 +73,7 @@ cmd_create() {
   log CREATE "$FULL"
   sleep 2
 
-  printf '\n--- Repo secrets (empty name to stop; prefer org-level, see credentials.txt) ---\n'
+  printf '\n--- Repo secrets (optional extras only; the 4 required secrets are org-level) ---\n'
   while :; do
     printf 'Secret name: '
     read -r SNAME
