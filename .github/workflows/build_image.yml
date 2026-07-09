@@ -1,78 +1,86 @@
 name: Build Image
 
+# Reusable workflow. Builds code/Dockerfile with Buildx and pushes a staging
+# image to OTC SWR. Non-secret config (registries, namespace) is passed in as
+# inputs from pipeline.yml, the single in-repo source of these constants.
 on:
-  workflow_call: # ← explicitly marks it as reusable
-
-    # Exposes image_name output so downstream jobs (security, rename, publish)
-    # know which Harbor image to scan, rename and publish
-
+  workflow_call:
+    inputs:
+      swr_registry:
+        description: "OTC SWR registry hostname"
+        required: true
+        type: string
+      swr_staging_org:
+        description: "SWR namespace for staging images"
+        required: true
+        type: string
+      base_registry:
+        description: "Registry that hosts the Dockerfile base image (pull only)"
+        required: true
+        type: string
     outputs:
       image_name:
-        description: "the full Harbor image name with staging tag"
+        description: "Full SWR staging image name that was pushed (with :sha8 tag)"
         value: ${{ jobs.build_image.outputs.image_name }}
 
 jobs:
   build_image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       image_name: ${{ steps.set_image_name.outputs.image_name }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
-        # ← checks out the child repo code onto the ubuntu runner
+        uses: actions/checkout@v7.0.0
 
       - name: Set image name
         id: set_image_name
         run: |
-           # Extract repository components from github.repository
-           # github.repository = "org-name/eumon_test"
-           REPO="${{ github.repository }}"
-           APP_NAME="${REPO##*/}"                    
-           # Build staging tag from full SHA trimmed to 8 chars
-           # GitLab: $CI_COMMIT_SHORT_SHA is already 8 chars
-           # GitHub: ${{ github.sha }} is full 40 chars so we trim it to 8 chars
-           TAG="${{ github.sha }}"
-           TAG="${TAG:0:8}"
-           # Build full image name - same structure as GitLab
-           # GitLab: IMAGE_NAME="$HARBOR_REGISTRY/$HARBOR_PROJECT/$TENANT_NAME/$TENANT_NAME/$APP_NAME:$STAGING_TAG"
-           HARBOR_REGISTRY="${{ vars.HARBOR_REGISTRY }}"
-           HARBOR_PROJECT="${{ vars.HARBOR_PROJECT }}"
-           IMAGE_PREFIX="test/$APP_NAME"
-           IMAGE_NAME="$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE_PREFIX:$TAG"
-           # Set the output so downstream jobs can read IMAGE_NAME
-           # GitLab: echo "IMAGE_NAME=$IMAGE_NAME" > image.env (dotenv artifact)
-           # GitHub: echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
-           echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          # APP_NAME = repository basename (org/<name> -> <name>).
+          REPO="${{ github.repository }}"
+          APP_NAME="${REPO##*/}"
+          # Staging tag = first 8 chars of the commit SHA.
+          TAG="${{ github.sha }}"
+          TAG="${TAG:0:8}"
+          # e.g. swr.eu-de.otc.t-systems.com/eopaas-test/<app>:<sha8>
+          IMAGE_NAME="${{ inputs.swr_registry }}/${{ inputs.swr_staging_org }}/${APP_NAME}:${TAG}"
+          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
 
-
-      - name: check Dockerfile exists
-        # GitLab: if [ -f "Dockerfile"]; then echo "Dockerfile exists"; else exit 1; fi
-        # Hard stop - pipeline fails immediately if Dockerfile is missing
+      - name: Check Dockerfile exists
+        # Hard stop: fail immediately if the child repo has no code/Dockerfile.
         run: |
           if [ -f "${{ github.workspace }}/code/Dockerfile" ]; then
             echo "Dockerfile found!"
           else
-            echo "Dockerfile not found!"
+            echo "Dockerfile not found under code/!"
             exit 1
           fi
-        
-      - name: Authenticate to Harbor
-        run: |
-          mkdir -p ${{ github.workspace }}/kaniko-docker
-          echo '${{ secrets.DOCKER_AUTH_CONFIG }}' > ${{ github.workspace }}/kaniko-docker/config.json
 
-      
-      
-      - name: Build and push image with Kaniko
-        # GitLab: ran entire job inside kaniko container
-        # GitHub: run kaniko as a docker container inside ubuntu runner
-        run: |
-          IMAGE_NAME="${{ steps.set_image_name.outputs.image_name }}"
-          docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
-            -v ${{ github.workspace }}/kaniko-docker/config.json:/kaniko/.docker/config.json \
-            ${{ secrets.KANIKO_IMAGE }} \
-            --context /workspace/code \
-            --dockerfile /workspace/code/Dockerfile \
-            --destination $IMAGE_NAME
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.2.0
+
+      - name: Log in to base image registry (Harbor)
+        # The Dockerfile FROM still pulls the base image from the internal Harbor.
+        uses: docker/login-action@v4.4.0
+        with:
+          registry: ${{ inputs.base_registry }}
+          username: ${{ secrets.BASE_REGISTRY_USERNAME }}
+          password: ${{ secrets.BASE_REGISTRY_PASSWORD }}
+
+      - name: Log in to OTC SWR
+        # AK/SK long-term login key. Username format: <region>@<AK>, e.g. eu-de@AK.
+        uses: docker/login-action@v4.4.0
+        with:
+          registry: ${{ inputs.swr_registry }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+
+      - name: Build and push staging image
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: ./code
+          file: ./code/Dockerfile
+          push: true
+          tags: ${{ steps.set_image_name.outputs.image_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

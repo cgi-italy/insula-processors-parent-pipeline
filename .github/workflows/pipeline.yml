@@ -1,8 +1,27 @@
 name: CI Pipeline
 
+# Single folded pipeline: secret scan -> build -> security scan -> publish.
+# Each stage depends on the previous via `needs`, so any failing stage (a
+# verified secret, or a HIGH/CRITICAL vulnerability from Grype or Trivy) blocks
+# every downstream stage. A fully clean run publishes automatically to SWR :latest.
+# No manual approval gates.
+#
+# ============================================================================
+# SINGLE SOURCE OF NON-SECRET CONFIG
+# ----------------------------------------------------------------------------
+# All non-secret pipeline constants (registries, SWR namespaces) live HERE and
+# are passed to the reusable workflows as inputs. Change them in this one place.
+# They are NOT GitHub `vars`: repo-level vars set on parent-pipeline are invisible
+# to a workflow that another repo calls, so hardcoding here is the reliable way
+# to keep them in this repo. Only real SECRETS (SWR_*, BASE_REGISTRY_* creds)
+# must live at the cgi-italy org level and reach here via `secrets: inherit`.
+#   SWR_REGISTRY     : swr.eu-de.otc.t-systems.com
+#   SWR_STAGING_ORG  : eopaas-test   (staging namespace; confirm exact name)
+#   SWR_PROD_ORG     : eopaas        (published namespace)
+#   BASE_REGISTRY    : core.harbor.dev.eoss-cloud.it  (Dockerfile base image)
+# ============================================================================
 on:
   workflow_call:
-  
 
 jobs:
   scan_secrets:
@@ -12,6 +31,10 @@ jobs:
   build_image:
     needs: [scan_secrets]
     uses: ./.github/workflows/build_image.yml
+    with:
+      swr_registry: swr.eu-de.otc.t-systems.com
+      swr_staging_org: eopaas-test
+      base_registry: core.harbor.dev.eoss-cloud.it
     secrets: inherit
 
   security:
@@ -19,12 +42,14 @@ jobs:
     uses: ./.github/workflows/security.yml
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
+      swr_registry: swr.eu-de.otc.t-systems.com
     secrets: inherit
 
-
-
-
-
-    
-    
-  
+  publish:
+    needs: [security]
+    # Only runs if scan_secrets, build_image, and BOTH security scans succeeded.
+    uses: ./.github/workflows/publish_image.yml
+    with:
+      image_name: ${{ needs.build_image.outputs.image_name }}
+      swr_prod_org: eopaas
+    secrets: inherit

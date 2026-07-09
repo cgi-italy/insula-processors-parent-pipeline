@@ -1,0 +1,17 @@
+version: 2
+
+# Central maintenance mechanism for pinned action versions.
+# GitHub does not allow variables in a workflow `uses:` ref, so action versions
+# cannot live in a shared config file. Dependabot instead opens one grouped PR
+# that bumps every pinned action across .github/workflows in a single review.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"

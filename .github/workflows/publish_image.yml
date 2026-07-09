@@ -1,50 +1,48 @@
 name: Publish Image
 
+# Reusable workflow. Promotes a scanned staging image to the published SWR
+# namespace as :latest. Called automatically by pipeline.yml only after the
+# secret scan and both security scans have passed. No manual approval gate.
 on:
   workflow_call:
     inputs:
       image_name:
-        description: "The test image to promote to production"
+        description: "Full SWR staging image name to promote (with :sha8 tag)"
+        required: true
+        type: string
+      swr_prod_org:
+        description: "SWR namespace for published images"
         required: true
         type: string
 
 jobs:
-  publish_to_harbor:
-    runs-on: ubuntu-latest
-    
-    environment: publish-approval
-    # GitHub equivalent of GitLab's when: manual
-    # second manual gate before publishing externally
-
+  publish_image:
+    runs-on: ubuntu-24.04
     steps:
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-      - name: Copy versioned image to Prod via Harbor API
-        # Harbor server-side copy - no image traffic through runner
+      - name: Resolve published image name
+        id: target
         run: |
+          # Staging:   <registry>/<staging-org>/<app>:<sha8>
+          # Published: <registry>/<prod-org>/<app>:latest
+          # Registry is taken from the staging image name (first path segment).
           REPO="${{ github.repository }}"
           APP_NAME="${REPO##*/}"
-          TAG="${{ inputs.image_name }}"
-          TAG="${TAG##*:}"
-          curl -s -X POST \
-            -u '${{ secrets.HARBOR_ADMIN_USERNAME }}:${{ secrets.HARBOR_ADMIN_PASSWORD }}' \
-            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts?from=${{ vars.HARBOR_PROJECT }}%2Ftest%2F${APP_NAME}%3A${TAG}" \
-            -H 'accept: application/json'
+          SRC="${{ inputs.image_name }}"
+          REGISTRY="${SRC%%/*}"
+          TARGET="${REGISTRY}/${{ inputs.swr_prod_org }}/${APP_NAME}:latest"
+          echo "target=$TARGET" >> $GITHUB_OUTPUT
 
-      - name: Tag copied image as latest via Harbor API
+      - name: Promote staging image to published :latest with Skopeo
+        # SWR speaks the Docker Registry v2 API, so skopeo copy works across
+        # namespaces without pulling the image through the runner filesystem.
         run: |
-          REPO="${{ github.repository }}"
-          APP_NAME="${REPO##*/}"
-          TAG="${{ inputs.image_name }}"
-          TAG="${TAG##*:}"
-          curl -s -X DELETE \
-            -u '${{ secrets.HARBOR_ADMIN_USERNAME }}:${{ secrets.HARBOR_ADMIN_PASSWORD }}' \
-            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/latest/tags/latest" \
-            -H 'accept: application/json' || true
-          curl -s -X POST \
-            -u '${{ secrets.HARBOR_ADMIN_USERNAME }}:${{ secrets.HARBOR_ADMIN_PASSWORD }}' \
-            "https://${{ vars.HARBOR_REGISTRY }}/api/v2.0/projects/${{ vars.HARBOR_PROD_PROJECT }}/repositories/prod%252F${APP_NAME}/artifacts/${TAG}/tags" \
-            -H 'accept: application/json' \
-            -H 'Content-Type: application/json' \
-            -d '{"name":"latest"}'
+          docker run --rm \
+            quay.io/skopeo/stable:v1.23.0 \
+            copy \
+            --src-creds '${{ secrets.SWR_USERNAME }}:${{ secrets.SWR_PASSWORD }}' \
+            --dest-creds '${{ secrets.SWR_USERNAME }}:${{ secrets.SWR_PASSWORD }}' \
+            docker://${{ inputs.image_name }} \
+            docker://${{ steps.target.outputs.target }}

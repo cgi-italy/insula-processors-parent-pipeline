@@ -1,137 +1,65 @@
 name: Security scan
 
+# Reusable workflow. Scans the staging SWR image with Grype and Trivy.
+# Both scanners BLOCK the pipeline on HIGH or CRITICAL findings (no continue-on-error),
+# so a failing scan prevents the downstream publish job from running.
 on:
-  workflow_call: # ← explicitly marks it as reusable
+  workflow_call:
     inputs:
       image_name:
-        description: "the full Harbor image name to scan"
+        description: "Full SWR staging image name to scan"
         required: true
         type: string
+      swr_registry:
+        description: "OTC SWR registry hostname (for login)"
+        required: true
+        type: string
+
 jobs:
   grype_scan:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    # run in parellel with trivy_scan 
-    
-    # GitHub: needs: [build_image] the download artifact explicitly
+    runs-on: ubuntu-24.04
+    # Runs in parallel with trivy_scan. No continue-on-error: a HIGH/CRITICAL fails the job.
     steps:
-
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-      - name: Create Reports directory
-        run: mkdir -p security_reports
-
-      - name: Create Grype registry config
-        run: |
-          echo 'registry:' > $(pwd)/grype-registry.yaml
-          echo '  auth:' >> $(pwd)/grype-registry.yaml
-          echo '    - authority: ${{ secrets.HARBOR_REGISTRY }}' >> $(pwd)/grype-registry.yaml
-          echo '      username: ${{ secrets.HARBOR_USERNAME }}' >> $(pwd)/grype-registry.yaml
-          echo '      password: ${{ secrets.HARBOR_PASSWORD }}' >> $(pwd)/grype-registry.yaml
+      - name: Log in to OTC SWR
+        uses: docker/login-action@v4.4.0
+        with:
+          registry: ${{ inputs.swr_registry }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
 
       - name: Scan image with Grype
-        # GitLab: /grype "$IMAGE_NAME" > grype_report.txt
-        # GitHub: docker run grype sccanning image.tar directly from runner
-        # We scan image.tar directly instead - no Harbor pull, no credentials needed
-        # DECISION NEEDED: confirm with team lead - keep scanning local tar (current)
-        # or switch to pulling fresh from Harbor like GitLab did
-        # -e GRYPE_REGISTRY_AUTH_USERNAME=${{ secrets.HARBOR_USERNAME }} \
-        # -e GRYPE_REGISTRY_AUTH_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
-
-        run: |
-          SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
-          docker run --rm \
-           -v $(pwd)/grype-registry.yaml:/grype-registry.yaml \
-           -v $(pwd)/grype-cache:/.cache/grype \
-           ${{ secrets.GRYPE_IMAGE }} \
-           --config /grype-registry.yaml \
-          ${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
-
-
-      - name: Upload Grype report
-        # GitLab: artifacts: paths: -security_reports/
-        # GitHub: must explicitly upload
-        uses: actions/upload-artifact@v7.0.1
+        uses: anchore/scan-action@v7.4.0
+        id: grype
         with:
-          name: grype-report 
-          path: security_reports/
-          retention-days: 7
+          image: ${{ inputs.image_name }}
+          fail-build: true
+          severity-cutoff: high
+          # fail-build + severity-cutoff high -> fail on HIGH and CRITICAL.
+          output-format: table
 
   trivy_scan:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    # runs in parallel with grype_scan -same as GitLab secuirty stage
-
+    runs-on: ubuntu-24.04
+    # Runs in parallel with grype_scan. No continue-on-error: a HIGH/CRITICAL fails the job.
     steps:
-
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-
-      - name: Create Reports directory
-        run: mkdir -p security_reports
-
-      - name: download Trivy vulnerability database
-        # GitLab: before_script: trivy image --download-db-only
-        # GitHub: seperate step before scanning
-        run: |
-          docker run --rm \
-           -v $(pwd)/trivy-cache:/root/.cache/trivy \
-           ${{ secrets.TRIVY_IMAGE }} \
-           image --download-db-only
-       
-      - name: Scan image with Trivy
-        # GitLab: trivy image --scanners vuln,secret --output report.txt "$IMAGE_NAME"
-        # GitHub: docker run trivy scanning image.tar directly from runner
-        # We scan image.tar directly instead - no Harbor pull, no credentials needed
-        # DECISION NEEDED: confirm with team lead - keep scanning local tar (current)
-        # or switch to pulling fresh from Harbor like GitLab did
-        # -e TRIVY_USERNAME=${{ secrets.HARBOR_USERNAME }} \
-        # -e TRIVY_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
-
-        run: |
-          SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
-          docker run --rm \
-           -e TRIVY_USERNAME='${{ secrets.HARBOR_USERNAME }}' \
-           -e TRIVY_PASSWORD='${{ secrets.HARBOR_PASSWORD }}' \
-           -v $(pwd)/trivy-cache:/root/.cache/trivy \
-           -v $(pwd)/security_reports:/reports \
-           ${{ secrets.TRIVY_IMAGE }} \
-           image \
-           ${{ inputs.image_name }} \
-           --scanners vuln,secret \
-           --output /reports/trivy_report_${SANITIZED_IMAGE_NAME}.txt
-
-          
-
-      - name: Upload Trivy report
-        # GitLab: artifacts: paths: -security_reports/
-        # GitHub: must explicitly upload
-        uses: actions/upload-artifact@v7.0.1
+      - name: Log in to OTC SWR
+        uses: docker/login-action@v4.4.0
         with:
-          name: trivy-report
-          path: security_reports/
-          retention-days: 7
+          registry: ${{ inputs.swr_registry }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ inputs.image_name }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          # exit-code 1 on HIGH,CRITICAL -> fails the job and blocks publish.
+          ignore-unfixed: true
