@@ -1,8 +1,13 @@
 name: Security scan
 
-# Reusable workflow. Scans the staging SWR image with Grype and Trivy.
-# Both scanners BLOCK the pipeline on HIGH or CRITICAL findings (no continue-on-error),
-# so a failing scan prevents the downstream publish job from running.
+# Reusable workflow. Pulls the staging SWR image ONCE, then scans it with both
+# Trivy and Grype from the local Docker daemon. A shared final gate BLOCKS the
+# pipeline on HIGH or CRITICAL findings from either scanner, so a failing scan
+# prevents the downstream publish job from running.
+#
+# Single job (not two parallel jobs) on purpose: the scan is disk-bound, not
+# CPU-bound. One image pull + one disk cleanup serves both scanners, avoids
+# pulling the (large) image twice, and prevents "no space left on device".
 on:
   workflow_call:
     inputs:
@@ -16,54 +21,28 @@ on:
         type: string
 
 jobs:
-  grype_scan:
+  scan:
     runs-on: ubuntu-24.04
-    # Runs in parallel with trivy_scan. No continue-on-error: a HIGH/CRITICAL fails the job.
     steps:
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-      - name: Log in to Registry
-        uses: docker/login-action@v4.4.0
-        with:
-          registry: ${{ inputs.swr_registry }}
-          username: ${{ secrets.SWR_USERNAME }}
-          password: ${{ secrets.SWR_PASSWORD }}
-
-      - name: Scan image with Grype
-        uses: anchore/scan-action@v7.4.0
-        id: grype
-        with:
-          image: ${{ inputs.image_name }}
-          # Report first, then fail explicitly in the next step so the package
-          # table is always printed even when findings block the build.
-          fail-build: false
-          severity-cutoff: high
-          output-format: json
-
-      - name: Report Grype HIGH/CRITICAL findings
+      - name: Free disk space
+        # Grype's scan-action exports the full image tar under /var/lib/docker and
+        # /tmp; large images exhaust the default runner disk. Deleting the unused
+        # preinstalled toolchains via rm -rf is fast (seconds) and frees ~25GB.
+        # We intentionally skip apt-based "large-packages" removal (slow) - the
+        # rm below is enough.
         run: |
-          report='${{ steps.grype.outputs.json }}'
-          filter='.matches[]? | select((.vulnerability.severity | ascii_upcase) == "HIGH" or (.vulnerability.severity | ascii_upcase) == "CRITICAL")'
-          count=$(jq "[$filter] | length" "$report")
-          {
-            echo "## Grype: $count HIGH/CRITICAL vulnerabilities"
-            echo ""
-            echo "| Severity | Package | Installed | Fixed in | Vulnerability |"
-            echo "|----------|---------|-----------|----------|---------------|"
-            jq -r "$filter | \"| \(.vulnerability.severity) | \(.artifact.name) | \(.artifact.version) | \((.vulnerability.fix.versions // []) | join(\", \") | if . == \"\" then \"-\" else . end) | \(.vulnerability.id) |\"" "$report"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "$count" -gt 0 ]; then
-            echo "::error::Grype found $count HIGH/CRITICAL vulnerabilities"
-            exit 1
-          fi
-
-  trivy_scan:
-    runs-on: ubuntu-24.04
-    # Runs in parallel with grype_scan. No continue-on-error: a HIGH/CRITICAL fails the job.
-    steps:
-      - name: Mask sensitive values
-        run: echo "::add-mask::${{ inputs.image_name }}"
+          echo "Before:"; df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache \
+            /usr/local/share/boost
+          echo "After:"; df -h /
 
       - name: Log in to Registry
         uses: docker/login-action@v4.4.0
@@ -71,6 +50,11 @@ jobs:
           registry: ${{ inputs.swr_registry }}
           username: ${{ secrets.SWR_USERNAME }}
           password: ${{ secrets.SWR_PASSWORD }}
+
+      - name: Pull image once
+        # Both scanners read from the local Docker daemon below, so the image is
+        # downloaded from the registry a single time here.
+        run: docker pull "${{ inputs.image_name }}"
 
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
@@ -78,25 +62,95 @@ jobs:
           image-ref: ${{ inputs.image_name }}
           scanners: vuln
           severity: HIGH,CRITICAL
-          # Report first, then fail explicitly in the next step so the package
-          # table is always printed even when findings block the build.
+          # Report first, block later in the shared gate so BOTH scanners always run.
           exit-code: '0'
           ignore-unfixed: true
           format: json
           output: trivy-results.json
 
       - name: Report Trivy HIGH/CRITICAL findings
+        # One row per package (not per CVE): severity, installed version, highest
+        # available fixed version, and how many HIGH/CRITICAL CVEs it carries.
+        # Sorted by Severity then Package name ascending (CRITICAL sorts before HIGH).
         run: |
           report=trivy-results.json
           count=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$report")
+          packages=$(jq '[.Results[]?.Vulnerabilities[]?] | group_by(.PkgName) | length' "$report")
           {
-            echo "## Trivy: $count HIGH/CRITICAL vulnerabilities"
+            echo "## Trivy: $count HIGH/CRITICAL vulnerabilities across $packages packages"
             echo ""
-            echo "| Severity | Package | Installed | Fixed in | Vulnerability |"
-            echo "|----------|---------|-----------|----------|---------------|"
-            jq -r '.Results[]?.Vulnerabilities[]? | "| \(.Severity) | \(.PkgName) | \(.InstalledVersion) | \(.FixedVersion // "-") | \(.VulnerabilityID) |"' "$report"
+            echo "| Severity | Package | Installed | Upgrade to | CVEs |"
+            echo "|----------|---------|-----------|------------|------|"
+            jq -r '
+              def vkey($v): [$v | splits("[^0-9]+")] | map(select(. != "") | tonumber);
+              [.Results[]?.Vulnerabilities[]?]
+              | group_by(.PkgName)
+              | map({
+                  severity: (map(.Severity) | sort | .[0]),
+                  pkg: .[0].PkgName,
+                  installed: .[0].InstalledVersion,
+                  fixed: (([.[].FixedVersion] | map(select(. != null and . != ""))) as $f
+                          | if ($f | length) > 0 then ($f | unique | max_by(vkey(.))) else "-" end),
+                  cves: ([.[].VulnerabilityID] | unique | length)
+                })
+              | sort_by(.severity, .pkg)
+              | .[]
+              | "| \(.severity) | \(.pkg) | \(.installed) | \(.fixed) | \(.cves) |"
+            ' "$report"
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "$count" -gt 0 ]; then
-            echo "::error::Trivy found $count HIGH/CRITICAL vulnerabilities"
-            exit 1
+          echo "TRIVY_COUNT=$count" >> "$GITHUB_ENV"
+
+      - name: Scan image with Grype
+        uses: anchore/scan-action@v7.4.0
+        id: grype
+        with:
+          image: ${{ inputs.image_name }}
+          fail-build: false
+          severity-cutoff: high
+          output-format: json
+
+      - name: Report Grype HIGH/CRITICAL findings
+        # Same one-row-per-package format as Trivy above.
+        run: |
+          report='${{ steps.grype.outputs.json }}'
+          hits='[.matches[]? | select((.vulnerability.severity | ascii_upcase) == "HIGH" or (.vulnerability.severity | ascii_upcase) == "CRITICAL")]'
+          count=$(jq "$hits | length" "$report")
+          packages=$(jq "$hits | group_by(.artifact.name) | length" "$report")
+          {
+            echo "## Grype: $count HIGH/CRITICAL vulnerabilities across $packages packages"
+            echo ""
+            echo "| Severity | Package | Installed | Upgrade to | CVEs |"
+            echo "|----------|---------|-----------|------------|------|"
+            jq -r '
+              def vkey($v): [$v | splits("[^0-9]+")] | map(select(. != "") | tonumber);
+              '"$hits"'
+              | group_by(.artifact.name)
+              | map({
+                  severity: (map(.vulnerability.severity | ascii_upcase) | sort | .[0]),
+                  pkg: .[0].artifact.name,
+                  installed: .[0].artifact.version,
+                  fixed: (([.[].vulnerability.fix.versions[]?] | map(select(. != null and . != ""))) as $f
+                          | if ($f | length) > 0 then ($f | unique | max_by(vkey(.))) else "-" end),
+                  cves: ([.[].vulnerability.id] | unique | length)
+                })
+              | sort_by(.severity, .pkg)
+              | .[]
+              | "| \(.severity) | \(.pkg) | \(.installed) | \(.fixed) | \(.cves) |"
+            ' "$report"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "GRYPE_COUNT=$count" >> "$GITHUB_ENV"
+
+      - name: Security gate
+        # Blocks publish if either scanner reported HIGH/CRITICAL findings. Runs
+        # after both reports so the full picture is always printed first.
+        run: |
+          fail=0
+          if [ "${TRIVY_COUNT:-0}" -gt 0 ]; then
+            echo "::error::Trivy found $TRIVY_COUNT HIGH/CRITICAL vulnerabilities"
+            fail=1
           fi
+          if [ "${GRYPE_COUNT:-0}" -gt 0 ]; then
+            echo "::error::Grype found $GRYPE_COUNT HIGH/CRITICAL vulnerabilities"
+            fail=1
+          fi
+          [ "$fail" -eq 0 ]
