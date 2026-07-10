@@ -23,8 +23,8 @@ Checkpoint 2 - BUILD
   (eopaas-test namespace, tagged with the 8-char commit SHA).
         |
 Checkpoint 3 - SECURITY SCAN
-  Grype and Trivy scan the staging image in parallel.
-  A HIGH or CRITICAL finding STOPS the pipeline.
+  Grype and Trivy scan the staging image (one job, streamed from the
+  registry). A HIGH or CRITICAL finding STOPS the pipeline.
         |
 Checkpoint 4 - PUBLISH (automatic)
   If every previous checkpoint passed, the scanned staging image is
@@ -32,7 +32,42 @@ Checkpoint 4 - PUBLISH (automatic)
   No manual approval.
 ```
 
-Gating is enforced by scanner exit codes plus GitHub `needs:` dependencies. There are no manual approval environments: a clean pipeline publishes on its own, a failing scan blocks publish.
+Gating is enforced by scanner exit codes plus GitHub `needs:` dependencies. There are no manual approval environments: a clean pipeline publishes on its own, a failing scan blocks publish, unless an authorized maintainer requests a bypass (see below).
+
+## Bypassing the gates
+
+An authorized maintainer can publish an image even when the secret scan and/or the vulnerability scan fail. This exists for exceptional cases (for example an unfixable base-image CVE that must ship while a real fix is prepared). It is deliberately manual and restricted.
+
+### What a bypass does and does not do
+
+- Bypasses Checkpoint 1 (TruffleHog secret scan) and Checkpoint 3 (Grype/Trivy vulnerability scan). One flag covers all three scanners.
+- Does NOT bypass the build. Checkpoint 2 must still succeed, so a broken Dockerfile still stops the pipeline.
+- Does NOT hide the failure. The scan jobs still run and still fail, so the workflow run is still reported as failed. The `publish` job runs anyway and ships the image.
+
+### How to trigger one
+
+The processor (caller) repo must expose a `bypass_gate` input on its `workflow_dispatch` trigger and forward it to this pipeline (the `processor-template` already does this). To run a bypass:
+
+1. Open the processor repo -> Actions -> the build workflow -> Run workflow.
+2. Tick `bypass_gate`, then run it. A bypass only happens on a manual `workflow_dispatch`; a normal `push` never bypasses.
+
+### Who is authorized
+
+The `check_bypass_authorized` job matches `github.actor` (whoever clicked Run workflow) against an explicit allowlist held in `pipeline.yml`:
+
+```yaml
+check_bypass_authorized:
+  if: ${{ inputs.bypass_gate }}
+  ...
+  env:
+    ALLOWLIST: '["argaar"]'   # edit this list to add/remove maintainers
+```
+
+The `cgi-italy` org has no teams, so authorization is this string allowlist rather than a team-membership API call - no extra token or org secret is required. An actor not on the list gets `authorized=false` and `publish` stays blocked. To change who can bypass, edit the `ALLOWLIST` in `pipeline.yml` (changes to this file are the control point, so restrict who can merge them).
+
+### Security consequence
+
+Bypassing Checkpoint 1 means shipping an image built from a commit that contains a verified, live secret. Rotate that credential immediately regardless of the bypass. Bypassing Checkpoint 3 ships known HIGH/CRITICAL vulnerabilities; track the follow-up fix.
 
 ## Tools
 
@@ -48,10 +83,10 @@ Gating is enforced by scanner exit codes plus GitHub `needs:` dependencies. Ther
 
 | File | Role |
 |------|------|
-| `pipeline.yml` | Orchestrator. Chains `scan_secrets -> build_image -> security -> publish` via `needs`. Holds all non-secret config (see below) |
+| `pipeline.yml` | Orchestrator. Chains `scan_secrets -> build_image -> security -> publish` via `needs`. Holds all non-secret config, the `bypass_gate` input, and the `check_bypass_authorized` allowlist |
 | `scan_secrets.yml` | TruffleHog filesystem scan of `code/`; blocks on a verified secret |
 | `build_image.yml` | Buildx build + push of the staging image; outputs `image_name` |
-| `security.yml` | Grype + Trivy scans in parallel; block on HIGH/CRITICAL |
+| `security.yml` | Grype + Trivy scans in one job (registry-streamed, one disk cleanup + cached vuln DBs); block on HIGH/CRITICAL |
 | `publish_image.yml` | Skopeo copy of the scanned image to `<prod>/<app>:latest` |
 
 ## Requirements to run
@@ -77,6 +112,7 @@ Registry hostnames and namespaces are hardcoded once in `pipeline.yml` and passe
 | `swr_staging_org` | `eopaas-test` | SWR namespace for freshly built, not-yet-scanned images |
 | `swr_prod_org` | `eopaas` | SWR namespace for published images |
 | `base_registry` | `core.harbor.dev.eoss-cloud.it` | Internal registry hosting the Dockerfile base image |
+| `bypass_gate` | `false` (default) | Optional boolean input. When `true` on a manual run by an allowlisted actor, publishes despite failing scans. See Bypassing the gates |
 
 ### Image naming
 

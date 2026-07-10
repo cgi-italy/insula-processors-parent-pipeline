@@ -52,8 +52,27 @@ jobs:
           username: ${{ secrets.SWR_USERNAME }}
           password: ${{ secrets.SWR_PASSWORD }}
 
+      - name: Trivy DB cache key
+        # No date function in expressions; derive one for the cache key.
+        id: cache_key
+        run: echo "date=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy vulnerability DB
+        # Trivy pulls its ~700MB vuln DB from GHCR on every run by default (and is
+        # subject to GHCR rate limits). Cache it so runs reuse it; the daily key
+        # keeps it fresh and Trivy still re-downloads if the cached DB is stale.
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: trivy-db-${{ steps.cache_key.outputs.date }}
+          restore-keys: |
+            trivy-db-
+
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          # Point Trivy at the cached DB directory populated by the cache step.
+          TRIVY_CACHE_DIR: ${{ github.workspace }}/.cache/trivy
         with:
           image-ref: ${{ inputs.image_name }}
           scanners: vuln
@@ -96,6 +115,16 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
           echo "TRIVY_COUNT=$count" >> "$GITHUB_ENV"
 
+      - name: Cache Grype vulnerability DB
+        # Grype downloads its vuln DB on every run by default. Cache it like Trivy;
+        # the daily key keeps it fresh and Grype re-downloads if the DB is stale.
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/grype/db
+          key: grype-db-${{ steps.cache_key.outputs.date }}
+          restore-keys: |
+            grype-db-
+
       - name: Scan image with Grype
         uses: anchore/scan-action@v7.4.0
         id: grype
@@ -104,6 +133,8 @@ jobs:
           # image tar from the Docker daemon (the "no space left on device" path).
           # Auth comes from the docker/login-action config written above.
           GRYPE_DEFAULT_IMAGE_PULL_SOURCE: registry
+          # Use the cached DB directory populated by the cache step above.
+          GRYPE_DB_CACHE_DIR: ${{ github.workspace }}/.cache/grype/db
         with:
           image: ${{ inputs.image_name }}
           fail-build: false
