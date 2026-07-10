@@ -55,6 +55,11 @@ jobs:
 
   security:
     needs: [build_image]
+    # Explicit condition required: check_bypass_authorized is skipped on normal
+    # runs, and that skip propagates down the needs chain under the default
+    # success() condition (it would skip security and publish). always() + an
+    # explicit build_image success check breaks that propagation.
+    if: ${{ always() && needs.build_image.result == 'success' }}
     uses: ./.github/workflows/security.yml
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
