@@ -40,7 +40,7 @@ jobs:
         # namespaces without pulling the image through the runner filesystem.
         run: |
           docker run --rm \
-            quay.io/skopeo/stable:v1.23.0 \
+            quay.io/skopeo/stable:v1.22.2 \
             copy \
             --src-creds '${{ secrets.SWR_USERNAME }}:${{ secrets.SWR_PASSWORD }}' \
             --dest-creds '${{ secrets.SWR_USERNAME }}:${{ secrets.SWR_PASSWORD }}' \
