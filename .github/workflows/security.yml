@@ -61,7 +61,7 @@ jobs:
         # Trivy pulls its ~700MB vuln DB from GHCR on every run by default (and is
         # subject to GHCR rate limits). Cache it so runs reuse it; the daily key
         # keeps it fresh and Trivy still re-downloads if the cached DB is stale.
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.cache/trivy
           key: trivy-db-${{ steps.cache_key.outputs.date }}
@@ -118,7 +118,7 @@ jobs:
       - name: Cache Grype vulnerability DB
         # Grype downloads its vuln DB on every run by default. Cache it like Trivy;
         # the daily key keeps it fresh and Grype re-downloads if the DB is stale.
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.cache/grype/db
           key: grype-db-${{ steps.cache_key.outputs.date }}
