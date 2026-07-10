@@ -26,9 +26,6 @@ jobs:
   scan:
     runs-on: ubuntu-24.04
     steps:
-      - name: Mask sensitive values
-        run: echo "::add-mask::${{ inputs.image_name }}"
-
       - name: Free disk space
         # Both scanners still write layer contents to their cache; large images
         # can exhaust the default runner disk. Deleting the unused preinstalled
