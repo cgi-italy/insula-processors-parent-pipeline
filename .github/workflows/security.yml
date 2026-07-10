@@ -1,137 +1,188 @@
 name: Security scan
 
+# Reusable workflow. Scans the staging SWR image with both Trivy and Grype,
+# each streaming layers directly from the registry (no docker pull / no daemon
+# tar export). A shared final gate BLOCKS the pipeline on HIGH or CRITICAL
+# findings from either scanner, so a failing scan prevents the downstream
+# publish job from running.
+#
+# Single job (not two parallel jobs) on purpose: the scan is disk-bound, not
+# CPU-bound. One disk cleanup serves both scanners and prevents
+# "no space left on device". Registry-streaming keeps disk use to the layer
+# cache instead of a full image tar.
 on:
-  workflow_call: # ← explicitly marks it as reusable
+  workflow_call:
     inputs:
       image_name:
-        description: "the full Harbor image name to scan"
+        description: "Full staging image name to scan"
         required: true
         type: string
+      swr_registry:
+        description: "Registry hostname (for login)"
+        required: true
+        type: string
+
 jobs:
-  grype_scan:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    # run in parellel with trivy_scan 
-    
-    # GitHub: needs: [build_image] the download artifact explicitly
+  scan:
+    runs-on: ubuntu-24.04
     steps:
-
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-
       - name: Mask sensitive values
         run: echo "::add-mask::${{ inputs.image_name }}"
 
-      - name: Create Reports directory
-        run: mkdir -p security_reports
-
-      - name: Create Grype registry config
+      - name: Free disk space
+        # Both scanners still write layer contents to their cache; large images
+        # can exhaust the default runner disk. Deleting the unused preinstalled
+        # toolchains via rm -rf is fast (seconds) and frees ~25GB. We skip the
+        # apt-based "large-packages" removal (slow) - the rm below is enough.
         run: |
-          echo 'registry:' > $(pwd)/grype-registry.yaml
-          echo '  auth:' >> $(pwd)/grype-registry.yaml
-          echo '    - authority: ${{ secrets.HARBOR_REGISTRY }}' >> $(pwd)/grype-registry.yaml
-          echo '      username: ${{ secrets.HARBOR_USERNAME }}' >> $(pwd)/grype-registry.yaml
-          echo '      password: ${{ secrets.HARBOR_PASSWORD }}' >> $(pwd)/grype-registry.yaml
+          echo "Before:"; df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache \
+            /usr/local/share/boost
+          echo "After:"; df -h /
+
+      - name: Log in to Registry
+        uses: docker/login-action@v4.4.0
+        with:
+          registry: ${{ inputs.swr_registry }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+
+      - name: Trivy DB cache key
+        # No date function in expressions; derive one for the cache key.
+        id: cache_key
+        run: echo "date=$(date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy vulnerability DB
+        # Trivy pulls its ~700MB vuln DB from GHCR on every run by default (and is
+        # subject to GHCR rate limits). Cache it so runs reuse it; the daily key
+        # keeps it fresh and Trivy still re-downloads if the cached DB is stale.
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/trivy
+          key: trivy-db-${{ steps.cache_key.outputs.date }}
+          restore-keys: |
+            trivy-db-
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          # Point Trivy at the cached DB directory populated by the cache step.
+          TRIVY_CACHE_DIR: ${{ github.workspace }}/.cache/trivy
+        with:
+          image-ref: ${{ inputs.image_name }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          # Report first, block later in the shared gate so BOTH scanners always run.
+          exit-code: '0'
+          ignore-unfixed: true
+          format: json
+          output: trivy-results.json
+
+      - name: Report Trivy HIGH/CRITICAL findings
+        # One row per package (not per CVE): severity, installed version, highest
+        # available fixed version, and how many HIGH/CRITICAL CVEs it carries.
+        # Sorted by Severity then Package name ascending (CRITICAL sorts before HIGH).
+        run: |
+          report=trivy-results.json
+          count=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$report")
+          packages=$(jq '[.Results[]?.Vulnerabilities[]?] | group_by(.PkgName) | length' "$report")
+          {
+            echo "## Trivy: $count HIGH/CRITICAL vulnerabilities across $packages packages"
+            echo ""
+            echo "| Severity | Package | Installed | Upgrade to | CVEs |"
+            echo "|----------|---------|-----------|------------|------|"
+            jq -r '
+              def vkey($v): [$v | splits("[^0-9]+")] | map(select(. != "") | tonumber);
+              [.Results[]?.Vulnerabilities[]?]
+              | group_by(.PkgName)
+              | map({
+                  severity: (map(.Severity) | sort | .[0]),
+                  pkg: .[0].PkgName,
+                  installed: .[0].InstalledVersion,
+                  fixed: (([.[].FixedVersion] | map(select(. != null and . != ""))) as $f
+                          | if ($f | length) > 0 then ($f | unique | max_by(vkey(.))) else "-" end),
+                  cves: ([.[].VulnerabilityID] | unique | length)
+                })
+              | sort_by(.severity, .pkg)
+              | .[]
+              | "| \(.severity) | \(.pkg) | \(.installed) | \(.fixed) | \(.cves) |"
+            ' "$report"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "TRIVY_COUNT=$count" >> "$GITHUB_ENV"
+
+      - name: Cache Grype vulnerability DB
+        # Grype downloads its vuln DB on every run by default. Cache it like Trivy;
+        # the daily key keeps it fresh and Grype re-downloads if the DB is stale.
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.cache/grype/db
+          key: grype-db-${{ steps.cache_key.outputs.date }}
+          restore-keys: |
+            grype-db-
 
       - name: Scan image with Grype
-        # GitLab: /grype "$IMAGE_NAME" > grype_report.txt
-        # GitHub: docker run grype sccanning image.tar directly from runner
-        # We scan image.tar directly instead - no Harbor pull, no credentials needed
-        # DECISION NEEDED: confirm with team lead - keep scanning local tar (current)
-        # or switch to pulling fresh from Harbor like GitLab did
-        # -e GRYPE_REGISTRY_AUTH_USERNAME=${{ secrets.HARBOR_USERNAME }} \
-        # -e GRYPE_REGISTRY_AUTH_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
-
-        run: |
-          SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
-          docker run --rm \
-           -v $(pwd)/grype-registry.yaml:/grype-registry.yaml \
-           -v $(pwd)/grype-cache:/.cache/grype \
-           ${{ secrets.GRYPE_IMAGE }} \
-           --config /grype-registry.yaml \
-          ${{ inputs.image_name }} > security_reports/grype_report_${SANITIZED_IMAGE_NAME}.txt
-
-
-      - name: Upload Grype report
-        # GitLab: artifacts: paths: -security_reports/
-        # GitHub: must explicitly upload
-        uses: actions/upload-artifact@v7.0.1
+        uses: anchore/scan-action@v7.4.0
+        id: grype
+        env:
+          # Stream layers straight from the registry instead of exporting a full
+          # image tar from the Docker daemon (the "no space left on device" path).
+          # Auth comes from the docker/login-action config written above.
+          GRYPE_DEFAULT_IMAGE_PULL_SOURCE: registry
+          # Use the cached DB directory populated by the cache step above.
+          GRYPE_DB_CACHE_DIR: ${{ github.workspace }}/.cache/grype/db
         with:
-          name: grype-report 
-          path: security_reports/
-          retention-days: 7
+          image: ${{ inputs.image_name }}
+          fail-build: false
+          severity-cutoff: high
+          output-format: json
 
-  trivy_scan:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    # runs in parallel with grype_scan -same as GitLab secuirty stage
-
-    steps:
-
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      
-      - name: Mask sensitive values
-        run: echo "::add-mask::${{ inputs.image_name }}"
-
-
-      - name: Create Reports directory
-        run: mkdir -p security_reports
-
-      - name: download Trivy vulnerability database
-        # GitLab: before_script: trivy image --download-db-only
-        # GitHub: seperate step before scanning
+      - name: Report Grype HIGH/CRITICAL findings
+        # Same one-row-per-package format as Trivy above.
         run: |
-          docker run --rm \
-           -v $(pwd)/trivy-cache:/root/.cache/trivy \
-           ${{ secrets.TRIVY_IMAGE }} \
-           image --download-db-only
-       
-      - name: Scan image with Trivy
-        # GitLab: trivy image --scanners vuln,secret --output report.txt "$IMAGE_NAME"
-        # GitHub: docker run trivy scanning image.tar directly from runner
-        # We scan image.tar directly instead - no Harbor pull, no credentials needed
-        # DECISION NEEDED: confirm with team lead - keep scanning local tar (current)
-        # or switch to pulling fresh from Harbor like GitLab did
-        # -e TRIVY_USERNAME=${{ secrets.HARBOR_USERNAME }} \
-        # -e TRIVY_PASSWORD=${{ secrets.HARBOR_PASSWORD }} \
+          report='${{ steps.grype.outputs.json }}'
+          hits='[.matches[]? | select((.vulnerability.severity | ascii_upcase) == "HIGH" or (.vulnerability.severity | ascii_upcase) == "CRITICAL")]'
+          count=$(jq "$hits | length" "$report")
+          packages=$(jq "$hits | group_by(.artifact.name) | length" "$report")
+          {
+            echo "## Grype: $count HIGH/CRITICAL vulnerabilities across $packages packages"
+            echo ""
+            echo "| Severity | Package | Installed | Upgrade to | CVEs |"
+            echo "|----------|---------|-----------|------------|------|"
+            jq -r '
+              def vkey($v): [$v | splits("[^0-9]+")] | map(select(. != "") | tonumber);
+              '"$hits"'
+              | group_by(.artifact.name)
+              | map({
+                  severity: (map(.vulnerability.severity | ascii_upcase) | sort | .[0]),
+                  pkg: .[0].artifact.name,
+                  installed: .[0].artifact.version,
+                  fixed: (([.[].vulnerability.fix.versions[]?] | map(select(. != null and . != ""))) as $f
+                          | if ($f | length) > 0 then ($f | unique | max_by(vkey(.))) else "-" end),
+                  cves: ([.[].vulnerability.id] | unique | length)
+                })
+              | sort_by(.severity, .pkg)
+              | .[]
+              | "| \(.severity) | \(.pkg) | \(.installed) | \(.fixed) | \(.cves) |"
+            ' "$report"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "GRYPE_COUNT=$count" >> "$GITHUB_ENV"
 
+      - name: Security gate
+        # Blocks publish if either scanner reported HIGH/CRITICAL findings. Runs
+        # after both reports so the full picture is always printed first.
         run: |
-          SANITIZED_IMAGE_NAME=$(echo "${{ inputs.image_name }}" | tr '/:' '__')
-          docker run --rm \
-           -e TRIVY_USERNAME='${{ secrets.HARBOR_USERNAME }}' \
-           -e TRIVY_PASSWORD='${{ secrets.HARBOR_PASSWORD }}' \
-           -v $(pwd)/trivy-cache:/root/.cache/trivy \
-           -v $(pwd)/security_reports:/reports \
-           ${{ secrets.TRIVY_IMAGE }} \
-           image \
-           ${{ inputs.image_name }} \
-           --scanners vuln,secret \
-           --output /reports/trivy_report_${SANITIZED_IMAGE_NAME}.txt
-
-          
-
-      - name: Upload Trivy report
-        # GitLab: artifacts: paths: -security_reports/
-        # GitHub: must explicitly upload
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: trivy-report
-          path: security_reports/
-          retention-days: 7
+          fail=0
+          if [ "${TRIVY_COUNT:-0}" -gt 0 ]; then
+            echo "::error::Trivy found $TRIVY_COUNT HIGH/CRITICAL vulnerabilities"
+            fail=1
+          fi
+          if [ "${GRYPE_COUNT:-0}" -gt 0 ]; then
+            echo "::error::Grype found $GRYPE_COUNT HIGH/CRITICAL vulnerabilities"
+            fail=1
+          fi
+          [ "$fail" -eq 0 ]

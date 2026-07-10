@@ -1,8 +1,36 @@
 name: CI Pipeline
 
+# Single folded pipeline: secret scan -> build -> security scan -> publish.
+# Each stage depends on the previous via `needs`, so any failing stage (a
+# verified secret, or a HIGH/CRITICAL vulnerability from Grype or Trivy) blocks
+# every downstream stage. A fully clean run publishes automatically to SWR :latest.
+#
+# BYPASS: a manual workflow_dispatch with bypass_gate=true, triggered by an actor
+# on the allowlist in check_bypass_authorized, publishes even when the secret scan
+# and/or the vulnerability scan fail. The image must still build. Use sparingly.
+#
+# ============================================================================
+# SINGLE SOURCE OF NON-SECRET CONFIG
+# ----------------------------------------------------------------------------
+# All non-secret pipeline constants (registries, SWR namespaces) live HERE and
+# are passed to the reusable workflows as inputs. Change them in this one place.
+# They are NOT GitHub `vars`: repo-level vars set on parent-pipeline are invisible
+# to a workflow that another repo calls, so hardcoding here is the reliable way
+# to keep them in this repo. Only real SECRETS (SWR_*, BASE_REGISTRY_* creds)
+# must live at the cgi-italy org level and reach here via `secrets: inherit`.
+#   SWR_REGISTRY     : swr.eu-de.otc.t-systems.com
+#   SWR_STAGING_ORG  : eopaas-test   (staging namespace; confirm exact name)
+#   SWR_PROD_ORG     : eopaas        (published namespace)
+#   BASE_REGISTRY    : core.harbor.dev.eoss-cloud.it  (Dockerfile base image)
+# ============================================================================
 on:
   workflow_call:
-  
+    inputs:
+      bypass_gate:
+        description: "Publish even if the secret or security scan fails (authorized actors only)"
+        type: boolean
+        default: false
+        required: false
 
 jobs:
   scan_secrets:
@@ -10,21 +38,72 @@ jobs:
     secrets: inherit
 
   build_image:
-    needs: [scan_secrets]
+    # Runs when the secret scan passed, OR when an authorized actor requested a
+    # bypass. This is what lets the bypass cover TruffleHog (a failed secret scan
+    # would otherwise skip this job and stop the whole chain).
+    needs: [scan_secrets, check_bypass_authorized]
+    if: >-
+      ${{ always()
+      && ( needs.scan_secrets.result == 'success'
+           || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
     uses: ./.github/workflows/build_image.yml
+    with:
+      swr_registry: swr.eu-de.otc.t-systems.com
+      swr_staging_org: eopaas-test
+      base_registry: core.harbor.dev.eoss-cloud.it
     secrets: inherit
 
   security:
     needs: [build_image]
+    # Explicit condition required: check_bypass_authorized is skipped on normal
+    # runs, and that skip propagates down the needs chain under the default
+    # success() condition (it would skip security and publish). always() + an
+    # explicit build_image success check breaks that propagation.
+    if: ${{ always() && needs.build_image.result == 'success' }}
     uses: ./.github/workflows/security.yml
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
+      swr_registry: swr.eu-de.otc.t-systems.com
     secrets: inherit
 
+  check_bypass_authorized:
+    # Only evaluated when a bypass is requested. The org has no teams, so we match
+    # the triggering actor against an explicit maintainer allowlist held in THIS
+    # protected parent repo (edits gated by the parent repo's own review rules).
+    # Uses no extra secret: the check is a local string match, not an API call.
+    if: ${{ inputs.bypass_gate }}
+    runs-on: ubuntu-24.04
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - id: check
+        env:
+          ACTOR: ${{ github.actor }}
+          # Maintainers permitted to bypass the security gate. Edit here only.
+          ALLOWLIST: '["argaar"]'
+        run: |
+          if echo "$ALLOWLIST" | jq -e --arg a "$ACTOR" 'index($a)' >/dev/null; then
+            echo "authorized=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Security gate BYPASS authorized for $ACTOR"
+          else
+            echo "authorized=false" >> "$GITHUB_OUTPUT"
+            echo "::error::$ACTOR is not authorized to bypass the security gate"
+          fi
 
-
-
-
-    
-    
-  
+  publish:
+    # Needs build_image for the image name (previously referenced but not listed),
+    # security for the scan result, and the bypass check for the override path.
+    needs: [build_image, security, check_bypass_authorized]
+    # Publish when the pipeline is clean, OR when an authorized actor requested a
+    # bypass. build_image must always have succeeded - an authorized bypass skips
+    # the secret and vulnerability GATES, but the image still has to build.
+    if: >-
+      ${{ always()
+      && needs.build_image.result == 'success'
+      && ( needs.security.result == 'success'
+           || (inputs.bypass_gate && needs.check_bypass_authorized.outputs.authorized == 'true') ) }}
+    uses: ./.github/workflows/publish_image.yml
+    with:
+      image_name: ${{ needs.build_image.outputs.image_name }}
+      swr_prod_org: eopaas
+    secrets: inherit
