@@ -20,7 +20,7 @@ name: CI Pipeline
 # must live at the cgi-italy org level and reach here via `secrets: inherit`.
 #   SWR_REGISTRY     : swr.eu-de.otc.t-systems.com
 #   SWR_STAGING_ORG  : eopaas-test   (staging namespace; confirm exact name)
-#   SWR_PROD_ORG     : eopaas        (published namespace)
+#   SWR_PROD_ORG     : eopaas/eopaas (published <tenant>/<namespace>)
 #   BASE_REGISTRY    : core.harbor.dev.eoss-cloud.it  (Dockerfile base image)
 # ============================================================================
 on:
@@ -105,5 +105,6 @@ jobs:
     uses: ./.github/workflows/publish_image.yml
     with:
       image_name: ${{ needs.build_image.outputs.image_name }}
-      swr_prod_org: eopaas
+      # <tenant>/<namespace>: SWR requires the tenant prefix on the push path.
+      swr_prod_org: eopaas/eopaas
     secrets: inherit
