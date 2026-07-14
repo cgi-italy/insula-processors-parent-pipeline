@@ -68,8 +68,11 @@ jobs:
         # Surface the published paths so the caller can POST them to the
         # consuming service. Emitted to the job summary and as workflow notices.
         run: |
+          # Report only <app>:<tag>, not the full registry/namespace path.
           LATEST="${{ steps.target.outputs.target_latest }}"
           SHA="${{ steps.target.outputs.target_sha }}"
+          LATEST="${LATEST##*/}"
+          [ -n "$SHA" ] && SHA="${SHA##*/}"
           {
             echo "## Published image"
             echo ""
