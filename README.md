@@ -6,7 +6,10 @@ SWR. They are called by the orchestrator `build-external.yml` in the
 `cgi-italy/insula-processor-launcher` repo, which is triggered by the
 `insula-processors-builder` CLI.
 
-> Internal repository, maintainers only. External users never get access here.
+> Public repository, but write-locked to maintainers (ruleset + CODEOWNERS).
+> External users don't interact with it directly - they use the launcher via the
+> CLI. It must be public because a public repo (the launcher) cannot call a
+> private repo's reusable workflows.
 > They keep their processor repo PUBLIC under their own name (scaffolded from the
 > `cgi-italy-insula-processors/insula-processor-template` cookiecutter), and launch
 > the pipeline through the CLI. This repo documents the shared pipeline and its
