@@ -1,10 +1,10 @@
-# parent-pipeline
+# insula-processors-parent-pipeline
 
 Central, reusable GitHub Actions building blocks for Insula EO processors. They
 secret-scan, build, security-scan, and publish a processor container image to OTC
 SWR. They are called by the orchestrator `build-external.yml` in the
 `cgi-italy/insula-processor-launcher` repo, which is triggered by the
-`insula-processor` CLI.
+`insula-processors-builder` CLI.
 
 > Internal repository, maintainers only. External users never get access here.
 > They keep their processor repo PUBLIC under their own name (scaffolded from the
@@ -17,7 +17,7 @@ SWR. They are called by the orchestrator `build-external.yml` in the
 The flow:
 
 ```
-insula-processor CLI  (user machine, holds the Insula api token)
+insula-processors-builder CLI  (user machine, holds the Insula api token)
         |  workflow_dispatch (Contents:write PAT on the launcher only)
         v
 insula-processor-launcher / build-external.yml
@@ -96,7 +96,7 @@ reach the jobs via `secrets: inherit` only when the run is on that branch.
 | `BASE_REGISTRY_PASSWORD` | Password/robot token for the base image registry pull |
 
 Store these ONLY as `swr` environment secrets on the launcher (not org-scoped, not
-in parent-pipeline). Org or plain repo secrets would be readable by any workflow on
+in insula-processors-parent-pipeline). Org or plain repo secrets would be readable by any workflow on
 any branch, so a user's side-branch dispatch could dump them; environment secrets
 are readable only by the environment-scoped jobs, which the branch policy blocks on
 non-default branches.

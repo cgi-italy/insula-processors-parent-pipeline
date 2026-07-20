@@ -74,7 +74,7 @@ jobs:
             APP_NAME="${REPO##*/}"
           fi
           # Staging tag = first 8 chars of the built commit. In the clone model the
-          # checked-out HEAD is the external repo; github.sha is parent-pipeline's.
+          # checked-out HEAD is the external repo; github.sha is insula-processors-parent-pipeline's.
           if [ -n "${{ inputs.repo_slug }}" ]; then
             TAG="$(git rev-parse HEAD | cut -c1-8)"
           else
