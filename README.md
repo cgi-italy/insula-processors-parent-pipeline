@@ -18,7 +18,7 @@ The flow:
 
 ```
 insula-processors-builder CLI  (user machine, holds the Insula api token)
-        |  workflow_dispatch (Contents:write PAT on the launcher only)
+        |  workflow_dispatch (Actions:write on the launcher only)
         v
 insula-processor-launcher / build-external.yml
         |  clones the PUBLIC processor repo, then calls the blocks below
