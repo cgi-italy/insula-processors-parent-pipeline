@@ -18,6 +18,26 @@ on:
         description: "Registry that hosts the Dockerfile base image (pull only)"
         required: true
         type: string
+      repo_slug:
+        description: "External repo owner/name to build; empty builds the caller"
+        required: false
+        default: ""
+        type: string
+      ref:
+        description: "Git ref of the external repo to build"
+        required: false
+        default: ""
+        type: string
+      app_name:
+        description: "Image app name; empty derives it from this repo's basename"
+        required: false
+        default: ""
+        type: string
+      source_path:
+        description: "Path (relative to repo root) holding the Dockerfile and build context"
+        required: false
+        default: "code"
+        type: string
     outputs:
       image_name:
         description: "Full SWR staging image name that was pushed (with :sha8 tag)"
@@ -26,32 +46,51 @@ on:
 jobs:
   build_image:
     runs-on: ubuntu-24.04
+    # Registry secrets live in this Environment, whose deployment-branch rule
+    # (default branch only) blocks a side-branch dispatch from reading them.
+    environment: swr
     outputs:
       image_name: ${{ steps.set_image_name.outputs.image_name }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout caller repo
+        if: ${{ inputs.repo_slug == '' }}
         uses: actions/checkout@v7.0.0
+
+      - name: Checkout external repo
+        if: ${{ inputs.repo_slug != '' }}
+        uses: actions/checkout@v7.0.0
+        with:
+          repository: ${{ inputs.repo_slug }}
+          ref: ${{ inputs.ref }}
 
       - name: Set image name
         id: set_image_name
         run: |
-          # APP_NAME = repository basename (org/<name> -> <name>).
-          REPO="${{ github.repository }}"
-          APP_NAME="${REPO##*/}"
-          # Staging tag = first 8 chars of the commit SHA.
-          TAG="${{ github.sha }}"
-          TAG="${TAG:0:8}"
+          # APP_NAME: explicit input (clone model), else this repo's basename (PULL).
+          APP_NAME="${{ inputs.app_name }}"
+          if [ -z "$APP_NAME" ]; then
+            REPO="${{ github.repository }}"
+            APP_NAME="${REPO##*/}"
+          fi
+          # Staging tag = first 8 chars of the built commit. In the clone model the
+          # checked-out HEAD is the external repo; github.sha is parent-pipeline's.
+          if [ -n "${{ inputs.repo_slug }}" ]; then
+            TAG="$(git rev-parse HEAD | cut -c1-8)"
+          else
+            TAG="${{ github.sha }}"
+            TAG="${TAG:0:8}"
+          fi
           IMAGE_NAME="${{ inputs.swr_registry }}/${{ inputs.swr_staging_org }}/${APP_NAME}:${TAG}"
           echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
 
       - name: Check Dockerfile exists
-        # Hard stop: fail immediately if the child repo has no code/Dockerfile.
+        # Hard stop: fail immediately if the repo has no Dockerfile under source_path.
         run: |
-          if [ -f "${{ github.workspace }}/code/Dockerfile" ]; then
+          if [ -f "${{ github.workspace }}/${{ inputs.source_path }}/Dockerfile" ]; then
             echo "Dockerfile found!"
           else
-            echo "Dockerfile not found under code/!"
+            echo "Dockerfile not found under ${{ inputs.source_path }}/!"
             exit 1
           fi
 
@@ -77,8 +116,8 @@ jobs:
       - name: Build and push staging image
         uses: docker/build-push-action@v7.3.0
         with:
-          context: ./code
-          file: ./code/Dockerfile
+          context: ./${{ inputs.source_path }}
+          file: ./${{ inputs.source_path }}/Dockerfile
           push: true
           tags: ${{ steps.set_image_name.outputs.image_name }}
           cache-from: type=gha

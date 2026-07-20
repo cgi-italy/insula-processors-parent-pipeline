@@ -25,6 +25,8 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-24.04
+    # Registry login secrets live in this Environment (default-branch-only rule).
+    environment: swr
     steps:
       - name: Free disk space
         # Both scanners still write layer contents to their cache; large images

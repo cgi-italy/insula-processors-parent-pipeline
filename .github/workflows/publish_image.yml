@@ -15,10 +15,23 @@ on:
         description: "Namespace for published images"
         required: true
         type: string
+      app_name:
+        description: "Image app name; empty derives it from this repo's basename"
+        required: false
+        default: ""
+        type: string
+    outputs:
+      published_image:
+        description: "Immutable published image ref (:sha8 when available, else :latest)"
+        value: ${{ jobs.publish_image.outputs.published_image }}
 
 jobs:
   publish_image:
     runs-on: ubuntu-24.04
+    # SWR promote credentials live in this Environment (default-branch-only rule).
+    environment: swr
+    outputs:
+      published_image: ${{ steps.target.outputs.published_image }}
     steps:
       - name: Resolve published image names
         id: target
@@ -29,8 +42,12 @@ jobs:
           # Registry is taken from the staging image name (first path segment).
           # SWR host carries no port, so the source tag is the part after the
           # last colon.
-          REPO="${{ github.repository }}"
-          APP_NAME="${REPO##*/}"
+          # APP_NAME: explicit input (clone model), else this repo's basename (PULL).
+          APP_NAME="${{ inputs.app_name }}"
+          if [ -z "$APP_NAME" ]; then
+            REPO="${{ github.repository }}"
+            APP_NAME="${REPO##*/}"
+          fi
           SRC="${{ inputs.image_name }}"
           REGISTRY="${SRC%%/*}"
           BASE="${REGISTRY}/${{ inputs.swr_prod_org }}/${APP_NAME}"
@@ -41,8 +58,10 @@ jobs:
           SHA_TAG="${SRC##*:}"
           if [ "$SHA_TAG" != "$SRC" ] && [ "$SHA_TAG" != "latest" ]; then
             echo "target_sha=${BASE}:${SHA_TAG}" >> $GITHUB_OUTPUT
+            echo "published_image=${BASE}:${SHA_TAG}" >> $GITHUB_OUTPUT
           else
             echo "target_sha=" >> $GITHUB_OUTPUT
+            echo "published_image=${BASE}:latest" >> $GITHUB_OUTPUT
           fi
 
       - name: Promote staging image to published tags with Skopeo
