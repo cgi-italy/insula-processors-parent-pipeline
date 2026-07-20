@@ -1,73 +1,55 @@
 # parent-pipeline
 
-Central, reusable GitHub Actions pipeline for `cgi-italy` EO processor repos. A child (processor) repo calls one workflow; a clean run builds, scans, and publishes a container image to OTC SWR automatically.
+Central, reusable GitHub Actions building blocks for Insula EO processors. They
+secret-scan, build, security-scan, and publish a processor container image to OTC
+SWR. They are called by the orchestrator `build-external.yml` in the
+`cgi-italy/insula-processor-launcher` repo, which is triggered by the
+`insula-processor` CLI.
 
-> Internal repository. This repo is maintained by us and documents the shared
-> pipeline architecture and its requirements. The processor repos that consume it
-> (template: `processor-template`) are the ones shared with external users so they
-> can build their own processors. Keep architecture/secret details here.
+> Internal repository, maintainers only. External users never get access here.
+> They keep their processor repo PUBLIC under their own name (scaffolded from the
+> `cgi-italy-insula-processors/insula-processor-template` cookiecutter), and launch
+> the pipeline through the CLI. This repo documents the shared pipeline and its
+> requirements.
 
-## The Assembly Line
+## Model (clone / dispatch)
 
-Every push to `main` in a processor repo runs one folded pipeline. Each stage gates the next: if any scan finds a problem, the pipeline stops and nothing is published.
+The flow:
 
 ```
-Code arrives (developer pushes to main)
+insula-processor CLI  (user machine, holds the Insula api token)
+        |  workflow_dispatch (Contents:write PAT on the launcher only)
+        v
+insula-processor-launcher / build-external.yml
+        |  clones the PUBLIC processor repo, then calls the blocks below
+        v
+Checkpoint 1 - SECRET SCAN   TruffleHog over the cloned code; verified secret STOPS.
+Checkpoint 2 - BUILD         Buildx builds code/Dockerfile; pushes staging image to SWR (eopaas-test, :sha8).
+Checkpoint 3 - SECURITY SCAN Grype + Trivy on the staging image; HIGH/CRITICAL STOPS.
+Checkpoint 4 - PUBLISH       Skopeo copies the scanned image to eopaas/eopaas:latest (+ :sha8). Automatic.
+Finalize                     (in the launcher) inject the published image into the CWL, upload it as artifact "cwl".
         |
-Checkpoint 1 - SECRET SCAN
-  TruffleHog scans code/ (filesystem mode) for verified secrets.
-  A verified secret STOPS the pipeline.
-        |
-Checkpoint 2 - BUILD
-  Buildx builds code/Dockerfile and pushes a staging image to SWR
-  (eopaas-test namespace, tagged with the 8-char commit SHA).
-        |
-Checkpoint 3 - SECURITY SCAN
-  Grype and Trivy scan the staging image (one job, streamed from the
-  registry). A HIGH or CRITICAL finding STOPS the pipeline.
-        |
-Checkpoint 4 - PUBLISH (automatic)
-  If every previous checkpoint passed, the scanned staging image is
-  copied to the published namespace (eopaas) as :latest.
-  No manual approval.
+        v
+CLI downloads the "cwl" artifact and POSTs it to https://insula.earth/ogcapi/processes
+with the user's api token (locally; the token never enters Actions).
 ```
 
-Gating is enforced by scanner exit codes plus GitHub `needs:` dependencies. There are no manual approval environments: a clean pipeline publishes on its own, a failing scan blocks publish, unless an authorized maintainer requests a bypass (see below).
+Gating is scanner exit codes plus `needs:` dependencies. No manual approval
+environments.
 
 ## Bypassing the gates
 
-An authorized maintainer can publish an image even when the secret scan and/or the vulnerability scan fail. This exists for exceptional cases (for example an unfixable base-image CVE that must ship while a real fix is prepared). It is deliberately manual and restricted.
+An allowlisted maintainer can publish an image despite a failing secret or security
+scan. The `bypass_gate` input and the `check_bypass_authorized` allowlist live in
+the launcher's `build-external.yml` (match on `github.actor`). The scans still run
+and still fail; `publish` runs anyway only when an authorized actor set the flag. A
+non-allowlisted actor setting it has no effect, so exposing the input is safe.
 
-### What a bypass does and does not do
-
-- Bypasses Checkpoint 1 (TruffleHog secret scan) and Checkpoint 3 (Grype/Trivy vulnerability scan). One flag covers all three scanners.
-- Does NOT bypass the build. Checkpoint 2 must still succeed, so a broken Dockerfile still stops the pipeline.
-- Does NOT hide the failure. The scan jobs still run and still fail, so the workflow run is still reported as failed. The `publish` job runs anyway and ships the image.
-
-### How to trigger one
-
-The processor (caller) repo must expose a `bypass_gate` input on its `workflow_dispatch` trigger and forward it to this pipeline (the `processor-template` already does this). To run a bypass:
-
-1. Open the processor repo -> Actions -> the build workflow -> Run workflow.
-2. Tick `bypass_gate`, then run it. A bypass only happens on a manual `workflow_dispatch`; a normal `push` never bypasses.
-
-### Who is authorized
-
-The `check_bypass_authorized` job matches `github.actor` (whoever clicked Run workflow) against an explicit allowlist held in `pipeline.yml`:
-
-```yaml
-check_bypass_authorized:
-  if: ${{ inputs.bypass_gate }}
-  ...
-  env:
-    ALLOWLIST: '["argaar"]'   # edit this list to add/remove maintainers
-```
-
-The `cgi-italy` org has no teams, so authorization is this string allowlist rather than a team-membership API call - no extra token or org secret is required. An actor not on the list gets `authorized=false` and `publish` stays blocked. To change who can bypass, edit the `ALLOWLIST` in `pipeline.yml` (changes to this file are the control point, so restrict who can merge them).
-
-### Security consequence
-
-Bypassing Checkpoint 1 means shipping an image built from a commit that contains a verified, live secret. Rotate that credential immediately regardless of the bypass. Bypassing Checkpoint 3 ships known HIGH/CRITICAL vulnerabilities; track the follow-up fix.
+- Build must still succeed; a bypass skips the scan GATES only.
+- The CLI's `--bypass` implies no CWL deploy by default (so a maintainer does not
+  deploy under their own api token); `--force-publish` overrides.
+- To relaunch a failed build, read its `repo_url`/`ref` from the run (also in the
+  run-name) and re-dispatch with `--bypass`.
 
 ## Tools
 
@@ -79,68 +61,93 @@ Bypassing Checkpoint 1 means shipping an image built from a commit that contains
 | Security Scan | Trivy (`aquasecurity/trivy-action`) | Fails on HIGH/CRITICAL vulns |
 | Publish | Skopeo | Registry-to-registry copy of the scanned image to the published namespace |
 
-## Workflow files
+## Workflow files (reusable building blocks)
+
+The orchestrator (`build-external.yml`) lives in `insula-processor-launcher`, not
+here. This repo ships only the reusable jobs it calls:
 
 | File | Role |
 |------|------|
-| `pipeline.yml` | Orchestrator. Chains `scan_secrets -> build_image -> security -> publish` via `needs`. Holds all non-secret config, the `bypass_gate` input, and the `check_bypass_authorized` allowlist |
-| `scan_secrets.yml` | TruffleHog filesystem scan of `code/`; blocks on a verified secret |
-| `build_image.yml` | Buildx build + push of the staging image; outputs `image_name` |
-| `security.yml` | Grype + Trivy scans in one job (registry-streamed, one disk cleanup + cached vuln DBs); block on HIGH/CRITICAL |
-| `publish_image.yml` | Skopeo copy of the scanned image to `<prod>/<app>:latest` |
+| `scan_secrets.yml` | TruffleHog filesystem scan; blocks on a verified secret. Inputs: `repo_slug`, `ref` (checks out the external repo; empty = the caller) |
+| `build_image.yml` | Buildx build + push of the staging image; outputs `image_name`. Inputs: `repo_slug`/`ref`/`app_name`/`source_path`. Logs in to Harbor (base image pull) + SWR (push) |
+| `security.yml` | Grype + Trivy in one job (registry-streamed, cached DBs); block on HIGH/CRITICAL |
+| `publish_image.yml` | Skopeo copy to `<prod>/<app>:latest` (+ `:sha8`); outputs `published_image` |
+
+Each secret-using job (`build_image`, `security`, `publish_image`) declares
+`environment: swr`. That environment, defined on the CALLER (the launcher) with a
+deployment-branch rule of default-branch-only, is what stops a user's side-branch
+dispatch from reading the registry secrets.
 
 ## Requirements to run
 
-### Secrets (4) - set at the `cgi-italy` org level
+### Secrets (4) - in the `swr` environment on the launcher repo
 
-GitHub reusable workflows resolve `secrets.*` against the CALLER repo and the org, never against parent-pipeline. These 4 secrets are defined once at the `cgi-italy` organization level (Organization Settings -> Secrets and variables -> Actions), with repository access scoped to the processor repos. `secrets: inherit` then passes them into the pipeline for every processor repo with zero per-repo setup.
+Reusable workflows resolve `secrets.*` against the caller repo/org. The caller is
+`insula-processor-launcher`, so the 4 secrets live in that repo's `swr`
+environment (Settings -> Environments -> swr -> Environment secrets), and the
+environment's deployment branches must be restricted to the default branch. They
+reach the jobs via `secrets: inherit` only when the run is on that branch.
 
 | Secret | Purpose |
 |--------|---------|
-| `SWR_USERNAME` | OTC SWR login username. Format `<region>@<AK>`, e.g. `eu-de@AK...`. From a long-term Access Key (AK/SK) |
+| `SWR_USERNAME` | OTC SWR login username. Format `<region>@<AK>`, e.g. `eu-de@AK...` |
 | `SWR_PASSWORD` | OTC SWR login key derived from the AK/SK pair |
 | `BASE_REGISTRY_USERNAME` | Credential to PULL the Dockerfile base image from the internal Harbor (`core.harbor.dev.eoss-cloud.it`) |
 | `BASE_REGISTRY_PASSWORD` | Password/robot token for the base image registry pull |
 
-### Non-secret config - lives in `pipeline.yml`
+Store these ONLY as `swr` environment secrets on the launcher (not org-scoped, not
+in parent-pipeline). Org or plain repo secrets would be readable by any workflow on
+any branch, so a user's side-branch dispatch could dump them; environment secrets
+are readable only by the environment-scoped jobs, which the branch policy blocks on
+non-default branches.
 
-Registry hostnames and namespaces are hardcoded once in `pipeline.yml` and passed to the reusable workflows as `with:` inputs (they are NOT GitHub variables; repo-level vars on parent-pipeline would be invisible to callers). To change them, edit `pipeline.yml` only.
+Private base images are not supported: the launcher is public, so no base-image
+pull credentials can be passed as inputs. Base images must be public or on the
+internal Harbor (pulled with `BASE_REGISTRY_*` above).
+
+### Non-secret config - in the launcher's `build-external.yml`
+
+Registry hostnames and namespaces are passed to the reusable workflows as `with:`
+inputs from `build-external.yml`. To change them, edit that file.
 
 | Input | Value | Meaning |
 |-------|-------|---------|
 | `swr_registry` | `swr.eu-de.otc.t-systems.com` | OTC SWR registry hostname |
 | `swr_staging_org` | `eopaas-test` | SWR namespace for freshly built, not-yet-scanned images |
-| `swr_prod_org` | `eopaas` | SWR namespace for published images |
+| `swr_prod_org` | `eopaas/eopaas` | SWR namespace for published images (tenant-prefixed) |
 | `base_registry` | `core.harbor.dev.eoss-cloud.it` | Internal registry hosting the Dockerfile base image |
-| `bypass_gate` | `false` (default) | Optional boolean input. When `true` on a manual run by an allowlisted actor, publishes despite failing scans. See Bypassing the gates |
 
 ### Image naming
 
 ```
-app name  : repository basename        (cgi-italy/<name> -> <name>)
+app name  : external repo basename        (owner/<name> -> <name>)
 staging   : swr.eu-de.otc.t-systems.com/eopaas-test/<name>:<sha8>
-published : swr.eu-de.otc.t-systems.com/eopaas/<name>:latest
-<sha8>    : first 8 characters of the commit SHA
+published : swr.eu-de.otc.t-systems.com/eopaas/eopaas/<name>:latest  (+ :<sha8>)
+<sha8>    : first 8 characters of the built commit (external repo HEAD)
 ```
 
 ## SWR gotchas
 
-- **Namespaces are not auto-created.** The `eopaas-test` (staging) and `eopaas` (published) organizations must already exist in SWR. A missing one fails the push with `Image organization does not exist`.
-- **No OCI attestations.** `build_image.yml` sets `provenance: false` and `sbom: false`. Without them Buildx pushes an OCI image index that SWR cannot parse (`Invalid image, fail to parse manifest.json`). Do not remove these unless SWR gains OCI-index support.
-- **Base image stays on Harbor.** The Dockerfile `FROM` still pulls from `core.harbor.dev.eoss-cloud.it`, which is why `BASE_REGISTRY_*` credentials are needed even though the output goes to SWR.
+- **Namespaces are not auto-created.** `eopaas-test` (staging) and `eopaas/eopaas`
+  (published) must already exist in SWR, or the push fails with `Image
+  organization does not exist`.
+- **No OCI attestations.** `build_image.yml` sets `provenance: false` and
+  `sbom: false`; otherwise Buildx pushes an OCI image index that SWR cannot parse.
+- **Base image stays on Harbor.** The Dockerfile `FROM` still pulls from
+  `core.harbor.dev.eoss-cloud.it`, hence the `BASE_REGISTRY_*` credentials.
 
 ## Version pinning and maintenance
 
-- All actions are pinned to exact versions; the skopeo and TruffleHog images are pinned by tag; runners are pinned to `ubuntu-24.04`. No floating refs (`@main`, `:latest`, `ubuntu-latest`).
-- `.github/dependabot.yml` opens a monthly grouped PR to bump the pinned actions. The skopeo and TruffleHog image tags are inline `run:` strings, so Dependabot does not track them - bump those by hand.
+- All actions are pinned to exact versions; skopeo and TruffleHog images pinned by
+  tag; runners pinned to `ubuntu-24.04`. No floating refs.
+- `.github/dependabot.yml` opens a monthly grouped PR to bump pinned actions. The
+  skopeo/TruffleHog image tags are inline `run:` strings, so bump those by hand.
+- `actions/upload-artifact` (used by the launcher's finalize step) is pinned; keep
+  it in the launcher repo's dependabot config.
 
-## Creating a new processor repo
+## Onboarding and processor creation
 
-Use `new-repo.sh` (requires the `gh` CLI):
-
-```sh
-./new-repo.sh inspect        # read-only: show the template/org config a new repo needs
-./new-repo.sh create         # create a new repo from cgi-italy/processor-template
-```
-
-A processor repo only needs a `.github/workflows/` that calls this pipeline and its app under `code/` (with a `Dockerfile`). The `processor-template` repo already has both.
+Users self-scaffold from the cookiecutter template and build via the CLI. To grant
+a new joiner launch access, use `insula-processor-launcher/onboard-joiner.sh`
+(`verify` / `onboard USER` / `offboard USER`). See that repo's `WORKFLOW.md` for
+the end-to-end flow.
