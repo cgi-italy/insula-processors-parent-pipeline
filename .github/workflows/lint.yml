@@ -1,0 +1,68 @@
+name: Lint
+
+# actionlint on the reusable workflows, plus a guard on the reusable-workflow
+# contract (the input/output names the launcher depends on) so a rename cannot ship
+# silently to the launcher when it bumps its pinned parent-pipeline SHA.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint
+        # Digest-pinned actionlint image (tag 1.7.12). shellcheck disabled for now
+        # (-shellcheck=); enable later behind a shell-cleanup pass.
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color -shellcheck=
+
+  reusable_contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: reusable workflow inputs/outputs still match the contract
+        run: |
+          python -m pip install --quiet pyyaml
+          python - <<'PY'
+          import sys, yaml
+
+          def call(path):
+              wf = yaml.safe_load(open(path, encoding="utf-8"))
+              return wf.get("on", wf.get(True))["workflow_call"]
+
+          errors = []
+          # Outputs the launcher reads.
+          if "image_name" not in (call(".github/workflows/build_image.yml").get("outputs") or {}):
+              errors.append("build_image.yml missing output image_name")
+          if "published_image" not in (call(".github/workflows/publish_image.yml").get("outputs") or {}):
+              errors.append("publish_image.yml missing output published_image")
+          # Inputs the launcher passes with `with:`.
+          expected = {
+              "scan_secrets.yml": {"repo_slug", "ref"},
+              "build_image.yml": {"swr_registry", "swr_staging_org", "base_registry", "repo_slug", "ref", "app_name"},
+              "security.yml": {"image_name", "swr_registry"},
+              "publish_image.yml": {"image_name", "swr_prod_org", "app_name"},
+          }
+          for fname, need in expected.items():
+              ins = set(call(f".github/workflows/{fname}").get("inputs") or {})
+              missing = need - ins
+              if missing:
+                  errors.append(f"{fname} missing inputs {sorted(missing)}")
+          if errors:
+              print("\n".join(f"::error::{e}" for e in errors))
+              sys.exit(1)
+          print("reusable-workflow contract OK")
+          PY

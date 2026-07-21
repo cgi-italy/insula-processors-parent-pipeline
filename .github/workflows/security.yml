@@ -29,6 +29,7 @@ permissions: {}
 jobs:
   scan:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # Registry login secrets live in this Environment (default-branch-only rule).
     environment: swr
     steps:
@@ -49,11 +50,13 @@ jobs:
           echo "After:"; df -h /
 
       - name: Log in to Registry
+        # STAGING credential: the scanners only READ the staging image. No job
+        # before publish_image.yml ever holds the prod-write credential.
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ${{ inputs.swr_registry }}
-          username: ${{ secrets.SWR_USERNAME }}
-          password: ${{ secrets.SWR_PASSWORD }}
+          username: ${{ secrets.SWR_STAGING_USERNAME }}
+          password: ${{ secrets.SWR_STAGING_PASSWORD }}
 
       - name: Trivy DB cache key
         # No date function in expressions; derive one for the cache key.
@@ -82,7 +85,9 @@ jobs:
           severity: HIGH,CRITICAL
           # Report first, block later in the shared gate so BOTH scanners always run.
           exit-code: '0'
-          ignore-unfixed: true
+          # Include unfixed vulnerabilities: Grype counts them too, so keeping Trivy
+          # consistent avoids one scanner passing what the other blocks.
+          ignore-unfixed: false
           format: json
           output: trivy-results.json
 
@@ -146,8 +151,12 @@ jobs:
 
       - name: Report Grype HIGH/CRITICAL findings
         # Same one-row-per-package format as Trivy above.
+        # Read the report path via env, not inline ${{ }}, matching the rest of the
+        # workflows (never interpolate a value into a run: shell).
+        env:
+          GRYPE_JSON: ${{ steps.grype.outputs.json }}
         run: |
-          report='${{ steps.grype.outputs.json }}'
+          report="$GRYPE_JSON"
           hits='[.matches[]? | select((.vulnerability.severity | ascii_upcase) == "HIGH" or (.vulnerability.severity | ascii_upcase) == "CRITICAL")]'
           count=$(jq "$hits | length" "$report")
           packages=$(jq "$hits | group_by(.artifact.name) | length" "$report")

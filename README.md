@@ -42,11 +42,13 @@ environments.
 
 ## Bypassing the gates
 
-An allowlisted maintainer can publish an image despite a failing secret or security
-scan. The `bypass_gate` input and the `check_bypass_authorized` allowlist live in
-the launcher's `build-external.yml` (match on `github.actor`). The scans still run
-and still fail; `publish` runs anyway only when an authorized actor set the flag. A
-non-allowlisted actor setting it has no effect, so exposing the input is safe.
+A maintainer can publish an image despite a failing secret or security scan.
+Authorization is by the actor's effective role on the launcher repo (admin or
+maintain, team grants included: the `insula-pipeline-maintainers` team qualifies),
+checked by the `check_bypass_authorized` job in the launcher's `build-external.yml`
+using the plain `GITHUB_TOKEN`. The scans still run and still fail; `publish` runs
+anyway only when an authorized actor set the flag. Any other actor setting it has
+no effect, so exposing the input is safe.
 
 - Build must still succeed; a bypass skips the scan GATES only.
 - The CLI's `--bypass` implies no CWL deploy by default (so a maintainer does not
@@ -73,8 +75,8 @@ here. This repo ships only the reusable jobs it calls:
 |------|------|
 | `scan_secrets.yml` | TruffleHog filesystem scan; blocks on a verified secret. Inputs: `repo_slug`, `ref` (checks out the external repo; empty = the caller) |
 | `build_image.yml` | Buildx build + push of the staging image; outputs `image_name`. Inputs: `repo_slug`/`ref`/`app_name`/`source_path`. Logs in to Harbor (base image pull) + SWR (push) |
-| `security.yml` | Grype + Trivy in one job (registry-streamed, cached DBs); block on HIGH/CRITICAL |
-| `publish_image.yml` | Skopeo copy to `<prod>/<app>:latest` (+ `:sha8`); outputs `published_image` |
+| `security.yml` | Grype + Trivy in one job (registry-streamed, cached DBs); block on HIGH/CRITICAL, including UNFIXED vulnerabilities (both scanners count them) |
+| `publish_image.yml` | Skopeo copy (retried) to `<prod>/<app>`: immutable `:sha8` first, then `:latest`; staging credential reads the source and cleans up staging, the prod-write credential (only present here) is the copy destination; outputs `published_image` |
 
 Each secret-using job (`build_image`, `security`, `publish_image`) declares
 `environment: swr`. That environment, defined on the CALLER (the launcher) with a
@@ -83,20 +85,30 @@ dispatch from reading the registry secrets.
 
 ## Requirements to run
 
-### Secrets (4) - in the `swr` environment on the launcher repo
+### Secrets (6) - in the `swr` environment on the launcher repo
 
 Reusable workflows resolve `secrets.*` against the caller repo/org. The caller is
-`insula-processor-launcher`, so the 4 secrets live in that repo's `swr`
+`insula-processor-launcher`, so the 6 secrets live in that repo's `swr`
 environment (Settings -> Environments -> swr -> Environment secrets), and the
 environment's deployment branches must be restricted to the default branch. They
 reach the jobs via `secrets: inherit` only when the run is on that branch.
 
+Two SWR credentials on purpose (least privilege): the build job executes an
+UNTRUSTED user Dockerfile, so it holds only the staging credential; the
+prod-write credential exists only in the publish job, after both scans passed.
+
 | Secret | Purpose |
 |--------|---------|
-| `SWR_USERNAME` | OTC SWR login username. Format `<region>@<AK>`, e.g. `eu-de@AK...` |
-| `SWR_PASSWORD` | OTC SWR login key derived from the AK/SK pair |
+| `SWR_STAGING_USERNAME` | OTC SWR login username (format `<region>@<AK>`, e.g. `eu-de@AK...`) scoped to `eopaas-test`: push (build), pull (scans, publish copy source), delete (staging cleanup) |
+| `SWR_STAGING_PASSWORD` | OTC SWR login key derived from the staging AK/SK pair |
+| `SWR_PROD_USERNAME` | OTC SWR login username scoped to WRITE `eopaas/eopaas`; used only as the skopeo copy destination in `publish_image.yml` |
+| `SWR_PROD_PASSWORD` | OTC SWR login key derived from the prod AK/SK pair |
 | `BASE_REGISTRY_USERNAME` | Credential to PULL the Dockerfile base image from the internal Harbor (`core.harbor.dev.eoss-cloud.it`) |
 | `BASE_REGISTRY_PASSWORD` | Password/robot token for the base image registry pull |
+
+Until per-namespace OTC IAM keys are provisioned, both SWR pairs may be set to the
+same AK/SK: the pipeline works identically, but the least-privilege separation only
+becomes real once the keys are scoped.
 
 Store these ONLY as `swr` environment secrets on the launcher (not org-scoped, not
 in insula-processors-parent-pipeline). Org or plain repo secrets would be readable by any workflow on
@@ -143,9 +155,19 @@ registry path.
   `sbom: false`; otherwise Buildx pushes an OCI image index that SWR cannot parse.
 - **Base image stays on Harbor.** The Dockerfile `FROM` still pulls from
   `core.harbor.dev.eoss-cloud.it`, hence the `BASE_REGISTRY_*` credentials.
+- **The base-image `FROM` pull has no retry** (accepted). Buildx pulls it
+  single-shot inside the build; a throttled or blipped registry pull fails the
+  run - just re-dispatch. Pre-pulling with retry would mean parsing `FROM` lines
+  (multi-stage, ARG substitution) out of an untrusted Dockerfile; not worth the
+  fragility. All other pulls in the pipeline (skopeo, TruffleHog, staging image)
+  do retry.
 
 ## Version pinning and maintenance
 
+- The launcher consumes these reusable workflows PINNED to a commit SHA of this
+  repo (never `@main`): a merge here goes live only when the launcher bumps its 4
+  pinned refs together. This repo has no tags/releases yet, so those pins are
+  bumped by hand.
 - All actions are pinned to a full commit SHA with the version in a trailing
   comment; skopeo and TruffleHog images are pinned by `@sha256:` digest; runners
   pinned to `ubuntu-24.04`. No floating refs or mutable tags.

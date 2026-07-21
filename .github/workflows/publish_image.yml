@@ -2,7 +2,7 @@ name: Publish Image
 
 # Reusable workflow. Promotes a scanned staging image to the published SWR
 # namespace as :latest and, when the source carries one, an immutable :sha8
-# tag. Called automatically by pipeline.yml only after the
+# tag. Called automatically by the launcher's build-external.yml only after the
 # secret scan and both security scans have passed. No manual approval gate.
 on:
   workflow_call:
@@ -16,9 +16,8 @@ on:
         required: true
         type: string
       app_name:
-        description: "Image app name; empty derives it from this repo's basename"
-        required: false
-        default: ""
+        description: "Image app name (owner-name)"
+        required: true
         type: string
     outputs:
       published_image:
@@ -32,6 +31,7 @@ permissions: {}
 jobs:
   publish_image:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # SWR promote credentials live in this Environment (default-branch-only rule).
     environment: swr
     outputs:
@@ -45,7 +45,6 @@ jobs:
           APP_NAME_IN: ${{ inputs.app_name }}
           IMAGE: ${{ inputs.image_name }}
           SWR_PROD_ORG: ${{ inputs.swr_prod_org }}
-          GH_REPOSITORY: ${{ github.repository }}
         run: |
           # Staging:   <registry>/<staging-org>/<app>:<sha8>
           # Published: <registry>/<prod-org>/<app>:latest   (moving tag)
@@ -53,13 +52,8 @@ jobs:
           # Registry is taken from the staging image name (first path segment).
           # SWR host carries no port, so the source tag is the part after the
           # last colon.
-          # APP_NAME: explicit input (clone model), else this repo's basename (PULL).
           # Lowercased because registry repository names must be lowercase.
-          APP_NAME="$APP_NAME_IN"
-          if [ -z "$APP_NAME" ]; then
-            APP_NAME="${GH_REPOSITORY##*/}"
-          fi
-          APP_NAME="$(printf '%s' "$APP_NAME" | tr '[:upper:]' '[:lower:]')"
+          APP_NAME="$(printf '%s' "$APP_NAME_IN" | tr '[:upper:]' '[:lower:]')"
           # Reject anything outside the lowercase registry-path charset (the caller
           # validates too; this is defence in depth).
           case "$APP_NAME" in
@@ -88,34 +82,75 @@ jobs:
       - name: Promote staging image to published tags with Skopeo
         # SWR speaks the Docker Registry v2 API, so skopeo copy works across
         # namespaces without pulling the image through the runner filesystem.
-        # Copy to :latest and, when available, to the immutable :sha8 tag.
-        # Credentials are written to a mounted authfile, never passed on the skopeo
-        # argv (where they would be visible in the container process list). The
-        # skopeo image is digest-pinned (tag v1.22.2); bump the digest by hand.
+        # Copy the immutable :sha8 tag FIRST, then move :latest: on a partial
+        # failure :latest must never point at a build that has no matching
+        # immutable :sha8 to trace it back to.
+        # Credentials are written to mounted authfiles, never passed on the skopeo
+        # argv (where they would be visible in the container process list). Two
+        # credentials on purpose (least privilege): the STAGING one reads and
+        # deletes eopaas-test and is the only SWR credential the earlier untrusted
+        # build job ever sees; the PROD-write one exists ONLY in this job, as the
+        # skopeo copy destination. The skopeo image is digest-pinned (tag
+        # v1.22.2); bump the digest by hand.
         env:
           IMAGE: ${{ inputs.image_name }}
           TARGET_LATEST: ${{ steps.target.outputs.target_latest }}
           TARGET_SHA: ${{ steps.target.outputs.target_sha }}
-          SWR_USERNAME: ${{ secrets.SWR_USERNAME }}
-          SWR_PASSWORD: ${{ secrets.SWR_PASSWORD }}
+          SWR_STAGING_USERNAME: ${{ secrets.SWR_STAGING_USERNAME }}
+          SWR_STAGING_PASSWORD: ${{ secrets.SWR_STAGING_PASSWORD }}
+          SWR_PROD_USERNAME: ${{ secrets.SWR_PROD_USERNAME }}
+          SWR_PROD_PASSWORD: ${{ secrets.SWR_PROD_PASSWORD }}
         run: |
+          SKOPEO="quay.io/skopeo/stable@sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615"
           REGISTRY="${IMAGE%%/*}"
           AUTH_DIR="$(mktemp -d)"
-          B64="$(printf '%s:%s' "$SWR_USERNAME" "$SWR_PASSWORD" | base64 -w0)"
-          echo "::add-mask::$B64"
-          printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$B64" > "$AUTH_DIR/auth.json"
+          B64_STAGING="$(printf '%s:%s' "$SWR_STAGING_USERNAME" "$SWR_STAGING_PASSWORD" | base64 -w0)"
+          echo "::add-mask::$B64_STAGING"
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$B64_STAGING" > "$AUTH_DIR/staging.json"
+          B64_PROD="$(printf '%s:%s' "$SWR_PROD_USERNAME" "$SWR_PROD_PASSWORD" | base64 -w0)"
+          echo "::add-mask::$B64_PROD"
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$B64_PROD" > "$AUTH_DIR/prod.json"
+          # Pull the pinned skopeo image with retries: an anonymous quay.io pull can
+          # be throttled/blip, and a failed pull would otherwise fail the publish.
+          n=0
+          until docker pull "$SKOPEO"; do
+            n=$((n+1)); [ "$n" -ge 3 ] && { echo "::error::could not pull skopeo image"; exit 1; }
+            sleep $((n*10))
+          done
+          # copy with skopeo's own --retry-times (in-call) plus an outer retry for
+          # process-level transients. Fails the job after retries (never masked).
+          # Source (staging read) and destination (prod write) use separate
+          # authfiles; both target the same SWR host, which is fine because skopeo
+          # resolves source and destination credentials independently.
           copy() {
-            docker run --rm \
-              -v "$AUTH_DIR:/auth:ro" \
-              quay.io/skopeo/stable@sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615 \
-              copy \
-              --authfile /auth/auth.json \
-              "docker://$IMAGE" \
-              "docker://$1"
+            m=0
+            until docker run --rm -v "$AUTH_DIR:/auth:ro" "$SKOPEO" \
+                copy --src-authfile /auth/staging.json --dest-authfile /auth/prod.json \
+                --retry-times 3 \
+                "docker://$IMAGE" "docker://$1"; do
+              m=$((m+1))
+              if [ "$m" -ge 3 ]; then
+                # Two credentials, two owners: say which side to suspect instead
+                # of leaving the operator to decode raw skopeo stderr.
+                echo "::error::skopeo copy to $1 failed after retries; if the error names the SOURCE ($IMAGE) check SWR_STAGING_*, if the DESTINATION ($1) check SWR_PROD_*; dispatch registry-canary to confirm logins"
+                return 1
+              fi
+              sleep $((m*5))
+            done
           }
-          copy "$TARGET_LATEST"
           if [ -n "$TARGET_SHA" ]; then
             copy "$TARGET_SHA"
+          fi
+          copy "$TARGET_LATEST"
+          # Publish succeeded: drop THIS run's staging tag from eopaas-test. Only this
+          # :sha8 - never all tags (concurrent builds of the same app push their own
+          # :sha8 to staging). Best-effort: a cleanup failure must NOT fail an
+          # already-successful publish (this is not the scan/publish gate).
+          if docker run --rm -v "$AUTH_DIR:/auth:ro" "$SKOPEO" \
+               delete --authfile /auth/staging.json "docker://$IMAGE"; then
+            echo "Removed staging image $IMAGE"
+          else
+            echo "::warning::could not remove staging image $IMAGE (publish OK); prune eopaas-test manually if it grows"
           fi
 
       - name: Report published image
@@ -138,4 +173,9 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
           echo "::notice title=Published image (latest)::$LATEST"
-          [ -n "$SHA" ] && echo "::notice title=Published image (sha)::$SHA"
+          # if-guard, not a bare AND-list: as the step's LAST command, a failing
+          # [ -n ] would set the step exit status to 1 and fail a successful
+          # publish on the no-:sha8 path.
+          if [ -n "$SHA" ]; then
+            echo "::notice title=Published image (sha)::$SHA"
+          fi

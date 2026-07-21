@@ -2,7 +2,7 @@ name: Build Image
 
 # Reusable workflow. Builds code/Dockerfile with Buildx and pushes a staging
 # image to OTC SWR. Non-secret config (registries, namespace) is passed in as
-# inputs from pipeline.yml, the single in-repo source of these constants.
+# `with:` inputs from the launcher's build-external.yml orchestrator.
 on:
   workflow_call:
     inputs:
@@ -19,19 +19,17 @@ on:
         required: true
         type: string
       repo_slug:
-        description: "External repo owner/name to build; empty builds the caller"
-        required: false
-        default: ""
+        description: "External processor repo (owner/name) to build"
+        required: true
         type: string
       ref:
-        description: "Git ref of the external repo to build"
+        description: "Git ref (commit SHA) of the external repo to build"
         required: false
         default: ""
         type: string
       app_name:
-        description: "Image app name; empty derives it from this repo's basename"
-        required: false
-        default: ""
+        description: "Image app name (owner-name)"
+        required: true
         type: string
       source_path:
         description: "Path (relative to repo root) holding the Dockerfile and build context"
@@ -49,6 +47,9 @@ permissions: {}
 jobs:
   build_image:
     runs-on: ubuntu-24.04
+    # Untrusted Dockerfile build: cap it so a hung/wedged build cannot hold a runner
+    # (and the concurrency slot) for the 6h GitHub default.
+    timeout-minutes: 60
     permissions:
       contents: read
     # Registry secrets live in this Environment, whose deployment-branch rule
@@ -58,37 +59,23 @@ jobs:
       image_name: ${{ steps.set_image_name.outputs.image_name }}
 
     steps:
-      - name: Checkout caller repo
-        if: ${{ inputs.repo_slug == '' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Checkout external repo
-        if: ${{ inputs.repo_slug != '' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Checkout the processor repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.repo_slug }}
           ref: ${{ inputs.ref }}
 
       - name: Set image name
         id: set_image_name
-        # Untrusted inputs (app_name, repo_slug) reach the shell via env and are
-        # referenced as $VARS, never inline ${{ }}, so no value can be substituted
-        # into the script before it runs.
+        # app_name reaches the shell via env and is referenced as $VAR, never inline
+        # ${{ }}, so no value can be substituted into the script before it runs.
         env:
           APP_NAME_IN: ${{ inputs.app_name }}
-          REPO_SLUG: ${{ inputs.repo_slug }}
           SWR_REGISTRY: ${{ inputs.swr_registry }}
           SWR_STAGING_ORG: ${{ inputs.swr_staging_org }}
-          GH_REPOSITORY: ${{ github.repository }}
-          GH_SHA: ${{ github.sha }}
         run: |
-          # APP_NAME: explicit input (clone model), else this repo's basename (PULL).
           # Lowercased because registry repository names must be lowercase.
-          APP_NAME="$APP_NAME_IN"
-          if [ -z "$APP_NAME" ]; then
-            APP_NAME="${GH_REPOSITORY##*/}"
-          fi
-          APP_NAME="$(printf '%s' "$APP_NAME" | tr '[:upper:]' '[:lower:]')"
+          APP_NAME="$(printf '%s' "$APP_NAME_IN" | tr '[:upper:]' '[:lower:]')"
           # Reject anything outside the lowercase registry-path charset (the caller
           # validates too; this is defence in depth).
           case "$APP_NAME" in
@@ -98,13 +85,8 @@ jobs:
           case "$APP_NAME" in
             *[!a-z0-9._-]*) echo "::error::app name has invalid characters"; exit 1 ;;
           esac
-          # Staging tag = first 8 chars of the built commit. In the clone model the
-          # checked-out HEAD is the external repo; github.sha is insula-processors-parent-pipeline's.
-          if [ -n "$REPO_SLUG" ]; then
-            TAG="$(git rev-parse HEAD | cut -c1-8)"
-          else
-            TAG="${GH_SHA:0:8}"
-          fi
+          # Staging tag = first 8 chars of the checked-out external repo HEAD.
+          TAG="$(git rev-parse HEAD | cut -c1-8)"
           IMAGE_NAME="${SWR_REGISTRY}/${SWR_STAGING_ORG}/${APP_NAME}:${TAG}"
           echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
 
@@ -133,11 +115,14 @@ jobs:
 
       - name: Log in to remote registry
         # AK/SK long-term login key. Username format: <region>@<AK>, e.g. eu-de@AK.
+        # STAGING credential on purpose: this job executes an untrusted Dockerfile,
+        # so it must never hold a credential that can write the published (prod)
+        # namespace. Prod-write creds exist only in publish_image.yml.
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ${{ inputs.swr_registry }}
-          username: ${{ secrets.SWR_USERNAME }}
-          password: ${{ secrets.SWR_PASSWORD }}
+          username: ${{ secrets.SWR_STAGING_USERNAME }}
+          password: ${{ secrets.SWR_STAGING_PASSWORD }}
 
       - name: Build and push staging image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
