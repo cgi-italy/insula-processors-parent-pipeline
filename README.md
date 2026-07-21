@@ -74,7 +74,7 @@ here. This repo ships only the reusable jobs it calls:
 | File | Role |
 |------|------|
 | `scan_secrets.yml` | TruffleHog filesystem scan; blocks on a verified secret. Inputs: `repo_slug`, `ref` (checks out the external repo; empty = the caller) |
-| `build_image.yml` | Buildx build + push of the staging image; outputs `image_name`. Inputs: `repo_slug`/`ref`/`app_name`/`source_path`. Logs in to Harbor (base image pull) + SWR (push) |
+| `build_image.yml` | Buildx build + push of the staging image; outputs `image_name`. Inputs: `repo_slug`/`ref`/`app_name`/`source_path`. Logs in to the base-image registry (pull) + SWR (push) |
 | `security.yml` | Grype + Trivy in one job (registry-streamed, cached DBs); block on HIGH/CRITICAL, including UNFIXED vulnerabilities (both scanners count them) |
 | `publish_image.yml` | Skopeo copy (retried) to `<prod>/<app>`: immutable `:sha8` first, then `:latest`; staging credential reads the source and cleans up staging, the prod-write credential (only present here) is the copy destination; outputs `published_image` |
 
@@ -85,40 +85,19 @@ dispatch from reading the registry secrets.
 
 ## Requirements to run
 
-### Secrets (6) - in the `swr` environment on the launcher repo
+### Registry credentials
 
-Reusable workflows resolve `secrets.*` against the caller repo/org. The caller is
-`insula-processor-launcher`, so the 6 secrets live in that repo's `swr`
-environment (Settings -> Environments -> swr -> Environment secrets), and the
-environment's deployment branches must be restricted to the default branch. They
-reach the jobs via `secrets: inherit` only when the run is on that branch.
-
-Two SWR credentials on purpose (least privilege): the build job executes an
-UNTRUSTED user Dockerfile, so it holds only the staging credential; the
-prod-write credential exists only in the publish job, after both scans passed.
-
-| Secret | Purpose |
-|--------|---------|
-| `SWR_STAGING_USERNAME` | OTC SWR login username (format `<region>@<AK>`, e.g. `eu-de@AK...`) scoped to `eopaas-test`: push (build), pull (scans, publish copy source), delete (staging cleanup) |
-| `SWR_STAGING_PASSWORD` | OTC SWR login key derived from the staging AK/SK pair |
-| `SWR_PROD_USERNAME` | OTC SWR login username scoped to WRITE `eopaas/eopaas`; used only as the skopeo copy destination in `publish_image.yml` |
-| `SWR_PROD_PASSWORD` | OTC SWR login key derived from the prod AK/SK pair |
-| `BASE_REGISTRY_USERNAME` | Credential to PULL the Dockerfile base image from the internal Harbor (`core.harbor.dev.eoss-cloud.it`) |
-| `BASE_REGISTRY_PASSWORD` | Password/robot token for the base image registry pull |
-
-Until per-namespace OTC IAM keys are provisioned, both SWR pairs may be set to the
-same AK/SK: the pipeline works identically, but the least-privilege separation only
-becomes real once the keys are scoped.
-
-Store these ONLY as `swr` environment secrets on the launcher (not org-scoped, not
-in insula-processors-parent-pipeline). Org or plain repo secrets would be readable by any workflow on
-any branch, so a user's side-branch dispatch could dump them; environment secrets
-are readable only by the environment-scoped jobs, which the branch policy blocks on
-non-default branches.
+Registry credentials are provisioned by the pipeline maintainers as environment
+secrets in the launcher's `swr` environment, restricted to the launcher's default
+branch (reusable workflows resolve `secrets.*` against the caller, and the branch
+policy stops a side-branch dispatch from reading them). Two SWR credentials exist
+on purpose (least privilege): the job building the untrusted Dockerfile holds only
+a staging-scoped credential; the prod-write credential exists only in the publish
+job, after both scans passed. Provisioning, scoping, and rotation are documented
+internally.
 
 Private base images are not supported: the launcher is public, so no base-image
-pull credentials can be passed as inputs. Base images must be public or on the
-internal Harbor (pulled with `BASE_REGISTRY_*` above).
+pull credentials can be passed as inputs. Base images must be public.
 
 ### Non-secret config - in the launcher's `build-external.yml`
 
@@ -130,7 +109,6 @@ inputs from `build-external.yml`. To change them, edit that file.
 | `swr_registry` | `swr.eu-de.otc.t-systems.com` | OTC SWR registry hostname |
 | `swr_staging_org` | `eopaas-test` | SWR namespace for freshly built, not-yet-scanned images |
 | `swr_prod_org` | `eopaas/eopaas` | SWR namespace for published images (tenant-prefixed) |
-| `base_registry` | `core.harbor.dev.eoss-cloud.it` | Internal registry hosting the Dockerfile base image |
 
 ### Image naming
 
@@ -145,22 +123,6 @@ The app name is owner-scoped so `owner/foo` and `otheruser/foo` do not collide o
 the shared `:latest` tag. It is lowercased (registry repository names must be
 lowercase) and validated against `^[a-z0-9][a-z0-9._-]*$` before it reaches a
 registry path.
-
-## SWR gotchas
-
-- **Namespaces are not auto-created.** `eopaas-test` (staging) and `eopaas/eopaas`
-  (published) must already exist in SWR, or the push fails with `Image
-  organization does not exist`.
-- **No OCI attestations.** `build_image.yml` sets `provenance: false` and
-  `sbom: false`; otherwise Buildx pushes an OCI image index that SWR cannot parse.
-- **Base image stays on Harbor.** The Dockerfile `FROM` still pulls from
-  `core.harbor.dev.eoss-cloud.it`, hence the `BASE_REGISTRY_*` credentials.
-- **The base-image `FROM` pull has no retry** (accepted). Buildx pulls it
-  single-shot inside the build; a throttled or blipped registry pull fails the
-  run - just re-dispatch. Pre-pulling with retry would mean parsing `FROM` lines
-  (multi-stage, ARG substitution) out of an untrusted Dockerfile; not worth the
-  fragility. All other pulls in the pipeline (skopeo, TruffleHog, staging image)
-  do retry.
 
 ## Version pinning and maintenance
 
@@ -189,7 +151,8 @@ in the pipeline needs write from `GITHUB_TOKEN`.
 
 ## Onboarding and processor creation
 
-Users self-scaffold from the cookiecutter template and build via the CLI. To grant
-a new joiner launch access, use `insula-processor-launcher/onboard-joiner.sh`
-(`verify` / `onboard USER` / `offboard USER`). See that repo's `WORKFLOW.md` for
-the end-to-end flow.
+Users self-scaffold from the cookiecutter template
+(`cgi-italy-insula-processors/insula-processor-template`) and build/deploy via the
+`insula-processors-builder` CLI. Launch access on the launcher repo is granted by
+a pipeline maintainer; the onboarding and operations procedures are documented
+internally.
