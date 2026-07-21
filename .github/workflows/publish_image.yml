@@ -25,6 +25,10 @@ on:
         description: "Immutable published image ref (:sha8 when available, else :latest)"
         value: ${{ jobs.publish_image.outputs.published_image }}
 
+# No checkout and no GITHUB_TOKEN use here (publish uses the SWR secrets), so deny
+# the token entirely.
+permissions: {}
+
 jobs:
   publish_image:
     runs-on: ubuntu-24.04
@@ -35,6 +39,13 @@ jobs:
     steps:
       - name: Resolve published image names
         id: target
+        # image_name/app_name reach the shell via env and are referenced as $VARS,
+        # never inline ${{ }}, so no value can be substituted into the script.
+        env:
+          APP_NAME_IN: ${{ inputs.app_name }}
+          IMAGE: ${{ inputs.image_name }}
+          SWR_PROD_ORG: ${{ inputs.swr_prod_org }}
+          GH_REPOSITORY: ${{ github.repository }}
         run: |
           # Staging:   <registry>/<staging-org>/<app>:<sha8>
           # Published: <registry>/<prod-org>/<app>:latest   (moving tag)
@@ -43,55 +54,81 @@ jobs:
           # SWR host carries no port, so the source tag is the part after the
           # last colon.
           # APP_NAME: explicit input (clone model), else this repo's basename (PULL).
-          APP_NAME="${{ inputs.app_name }}"
+          # Lowercased because registry repository names must be lowercase.
+          APP_NAME="$APP_NAME_IN"
           if [ -z "$APP_NAME" ]; then
-            REPO="${{ github.repository }}"
-            APP_NAME="${REPO##*/}"
+            APP_NAME="${GH_REPOSITORY##*/}"
           fi
-          SRC="${{ inputs.image_name }}"
+          APP_NAME="$(printf '%s' "$APP_NAME" | tr '[:upper:]' '[:lower:]')"
+          # Reject anything outside the lowercase registry-path charset (the caller
+          # validates too; this is defence in depth).
+          case "$APP_NAME" in
+            [a-z0-9]*) : ;;
+            *) echo "::error::app name must start with a lowercase alphanumeric"; exit 1 ;;
+          esac
+          case "$APP_NAME" in
+            *[!a-z0-9._-]*) echo "::error::app name has invalid characters"; exit 1 ;;
+          esac
+          SRC="$IMAGE"
           REGISTRY="${SRC%%/*}"
-          BASE="${REGISTRY}/${{ inputs.swr_prod_org }}/${APP_NAME}"
-          echo "target_latest=${BASE}:latest" >> $GITHUB_OUTPUT
+          BASE="${REGISTRY}/${SWR_PROD_ORG}/${APP_NAME}"
+          echo "target_latest=${BASE}:latest" >> "$GITHUB_OUTPUT"
 
           # Only expose a sha target when the source actually carries a tag that
           # is not itself "latest".
           SHA_TAG="${SRC##*:}"
           if [ "$SHA_TAG" != "$SRC" ] && [ "$SHA_TAG" != "latest" ]; then
-            echo "target_sha=${BASE}:${SHA_TAG}" >> $GITHUB_OUTPUT
-            echo "published_image=${BASE}:${SHA_TAG}" >> $GITHUB_OUTPUT
+            echo "target_sha=${BASE}:${SHA_TAG}" >> "$GITHUB_OUTPUT"
+            echo "published_image=${BASE}:${SHA_TAG}" >> "$GITHUB_OUTPUT"
           else
-            echo "target_sha=" >> $GITHUB_OUTPUT
-            echo "published_image=${BASE}:latest" >> $GITHUB_OUTPUT
+            echo "target_sha=" >> "$GITHUB_OUTPUT"
+            echo "published_image=${BASE}:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Promote staging image to published tags with Skopeo
         # SWR speaks the Docker Registry v2 API, so skopeo copy works across
         # namespaces without pulling the image through the runner filesystem.
         # Copy to :latest and, when available, to the immutable :sha8 tag.
+        # Credentials are written to a mounted authfile, never passed on the skopeo
+        # argv (where they would be visible in the container process list). The
+        # skopeo image is digest-pinned (tag v1.22.2); bump the digest by hand.
+        env:
+          IMAGE: ${{ inputs.image_name }}
+          TARGET_LATEST: ${{ steps.target.outputs.target_latest }}
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
+          SWR_USERNAME: ${{ secrets.SWR_USERNAME }}
+          SWR_PASSWORD: ${{ secrets.SWR_PASSWORD }}
         run: |
+          REGISTRY="${IMAGE%%/*}"
+          AUTH_DIR="$(mktemp -d)"
+          B64="$(printf '%s:%s' "$SWR_USERNAME" "$SWR_PASSWORD" | base64 -w0)"
+          echo "::add-mask::$B64"
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "$REGISTRY" "$B64" > "$AUTH_DIR/auth.json"
           copy() {
             docker run --rm \
-              quay.io/skopeo/stable:v1.22.2 \
+              -v "$AUTH_DIR:/auth:ro" \
+              quay.io/skopeo/stable@sha256:c7d3c512612f52805023cd38351081dad7e2729fc13d14b701e47c7c8bdd6615 \
               copy \
-              --src-creds '${{ secrets.SWR_USERNAME }}:${{ secrets.SWR_PASSWORD }}' \
-              --dest-creds '${{ secrets.SWR_USERNAME }}:${{ secrets.SWR_PASSWORD }}' \
-              "docker://${{ inputs.image_name }}" \
+              --authfile /auth/auth.json \
+              "docker://$IMAGE" \
               "docker://$1"
           }
-          copy "${{ steps.target.outputs.target_latest }}"
-          if [ -n "${{ steps.target.outputs.target_sha }}" ]; then
-            copy "${{ steps.target.outputs.target_sha }}"
+          copy "$TARGET_LATEST"
+          if [ -n "$TARGET_SHA" ]; then
+            copy "$TARGET_SHA"
           fi
 
       - name: Report published image
         # Surface the published paths so the caller can POST them to the
         # consuming service. Emitted to the job summary and as workflow notices.
+        env:
+          TARGET_LATEST: ${{ steps.target.outputs.target_latest }}
+          TARGET_SHA: ${{ steps.target.outputs.target_sha }}
         run: |
           # Report only <app>:<tag>, not the full registry/namespace path.
-          LATEST="${{ steps.target.outputs.target_latest }}"
-          SHA="${{ steps.target.outputs.target_sha }}"
-          LATEST="${LATEST##*/}"
-          [ -n "$SHA" ] && SHA="${SHA##*/}"
+          LATEST="${TARGET_LATEST##*/}"
+          SHA=""
+          [ -n "$TARGET_SHA" ] && SHA="${TARGET_SHA##*/}"
           {
             echo "## Published image"
             echo ""

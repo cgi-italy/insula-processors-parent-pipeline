@@ -43,9 +43,14 @@ on:
         description: "Full SWR staging image name that was pushed (with :sha8 tag)"
         value: ${{ jobs.build_image.outputs.image_name }}
 
+# Deny GITHUB_TOKEN by default; the job re-grants only contents:read for checkout.
+permissions: {}
+
 jobs:
   build_image:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     # Registry secrets live in this Environment, whose deployment-branch rule
     # (default branch only) blocks a side-branch dispatch from reading them.
     environment: swr
@@ -55,51 +60,72 @@ jobs:
     steps:
       - name: Checkout caller repo
         if: ${{ inputs.repo_slug == '' }}
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Checkout external repo
         if: ${{ inputs.repo_slug != '' }}
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.repo_slug }}
           ref: ${{ inputs.ref }}
 
       - name: Set image name
         id: set_image_name
+        # Untrusted inputs (app_name, repo_slug) reach the shell via env and are
+        # referenced as $VARS, never inline ${{ }}, so no value can be substituted
+        # into the script before it runs.
+        env:
+          APP_NAME_IN: ${{ inputs.app_name }}
+          REPO_SLUG: ${{ inputs.repo_slug }}
+          SWR_REGISTRY: ${{ inputs.swr_registry }}
+          SWR_STAGING_ORG: ${{ inputs.swr_staging_org }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
         run: |
           # APP_NAME: explicit input (clone model), else this repo's basename (PULL).
-          APP_NAME="${{ inputs.app_name }}"
+          # Lowercased because registry repository names must be lowercase.
+          APP_NAME="$APP_NAME_IN"
           if [ -z "$APP_NAME" ]; then
-            REPO="${{ github.repository }}"
-            APP_NAME="${REPO##*/}"
+            APP_NAME="${GH_REPOSITORY##*/}"
           fi
+          APP_NAME="$(printf '%s' "$APP_NAME" | tr '[:upper:]' '[:lower:]')"
+          # Reject anything outside the lowercase registry-path charset (the caller
+          # validates too; this is defence in depth).
+          case "$APP_NAME" in
+            [a-z0-9]*) : ;;
+            *) echo "::error::app name must start with a lowercase alphanumeric"; exit 1 ;;
+          esac
+          case "$APP_NAME" in
+            *[!a-z0-9._-]*) echo "::error::app name has invalid characters"; exit 1 ;;
+          esac
           # Staging tag = first 8 chars of the built commit. In the clone model the
           # checked-out HEAD is the external repo; github.sha is insula-processors-parent-pipeline's.
-          if [ -n "${{ inputs.repo_slug }}" ]; then
+          if [ -n "$REPO_SLUG" ]; then
             TAG="$(git rev-parse HEAD | cut -c1-8)"
           else
-            TAG="${{ github.sha }}"
-            TAG="${TAG:0:8}"
+            TAG="${GH_SHA:0:8}"
           fi
-          IMAGE_NAME="${{ inputs.swr_registry }}/${{ inputs.swr_staging_org }}/${APP_NAME}:${TAG}"
-          echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+          IMAGE_NAME="${SWR_REGISTRY}/${SWR_STAGING_ORG}/${APP_NAME}:${TAG}"
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Check Dockerfile exists
         # Hard stop: fail immediately if the repo has no Dockerfile under source_path.
+        env:
+          SOURCE_PATH: ${{ inputs.source_path }}
         run: |
-          if [ -f "${{ github.workspace }}/${{ inputs.source_path }}/Dockerfile" ]; then
+          if [ -f "${GITHUB_WORKSPACE}/${SOURCE_PATH}/Dockerfile" ]; then
             echo "Dockerfile found!"
           else
-            echo "Dockerfile not found under ${{ inputs.source_path }}/!"
+            echo "Dockerfile not found under ${SOURCE_PATH}/!"
             exit 1
           fi
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.2.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to base image registry
         # The Dockerfile FROM still pulls the base image from the internal Harbor.
-        uses: docker/login-action@v4.4.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ${{ inputs.base_registry }}
           username: ${{ secrets.BASE_REGISTRY_USERNAME }}
@@ -107,14 +133,14 @@ jobs:
 
       - name: Log in to remote registry
         # AK/SK long-term login key. Username format: <region>@<AK>, e.g. eu-de@AK.
-        uses: docker/login-action@v4.4.0
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ${{ inputs.swr_registry }}
           username: ${{ secrets.SWR_USERNAME }}
           password: ${{ secrets.SWR_PASSWORD }}
 
       - name: Build and push staging image
-        uses: docker/build-push-action@v7.3.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ./${{ inputs.source_path }}
           file: ./${{ inputs.source_path }}/Dockerfile

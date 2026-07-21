@@ -123,11 +123,16 @@ inputs from `build-external.yml`. To change them, edit that file.
 ### Image naming
 
 ```
-app name  : external repo basename        (owner/<name> -> <name>)
-staging   : swr.eu-de.otc.t-systems.com/eopaas-test/<name>:<sha8>
-published : swr.eu-de.otc.t-systems.com/eopaas/eopaas/<name>:latest  (+ :<sha8>)
+app name  : <owner>-<name>                 (owner/<name> -> <owner>-<name>)
+staging   : swr.eu-de.otc.t-systems.com/eopaas-test/<owner>-<name>:<sha8>
+published : swr.eu-de.otc.t-systems.com/eopaas/eopaas/<owner>-<name>:latest  (+ :<sha8>)
 <sha8>    : first 8 characters of the built commit (external repo HEAD)
 ```
+
+The app name is owner-scoped so `owner/foo` and `otheruser/foo` do not collide on
+the shared `:latest` tag. It is lowercased (registry repository names must be
+lowercase) and validated against `^[a-z0-9][a-z0-9._-]*$` before it reaches a
+registry path.
 
 ## SWR gotchas
 
@@ -141,12 +146,24 @@ published : swr.eu-de.otc.t-systems.com/eopaas/eopaas/<name>:latest  (+ :<sha8>)
 
 ## Version pinning and maintenance
 
-- All actions are pinned to exact versions; skopeo and TruffleHog images pinned by
-  tag; runners pinned to `ubuntu-24.04`. No floating refs.
-- `.github/dependabot.yml` opens a monthly grouped PR to bump pinned actions. The
-  skopeo/TruffleHog image tags are inline `run:` strings, so bump those by hand.
+- All actions are pinned to a full commit SHA with the version in a trailing
+  comment; skopeo and TruffleHog images are pinned by `@sha256:` digest; runners
+  pinned to `ubuntu-24.04`. No floating refs or mutable tags.
+- `.github/dependabot.yml` opens a monthly grouped PR to bump pinned actions
+  (Dependabot updates SHA-pinned actions and keeps the version comment in sync).
+  The skopeo/TruffleHog image digests are inline `run:` strings, so bump those by
+  hand.
 - `actions/upload-artifact` (used by the launcher's finalize step) is pinned; keep
   it in the launcher repo's dependabot config.
+
+## GITHUB_TOKEN permissions
+
+Every workflow sets least-privilege `permissions`. The reusable workflows default to
+`permissions: {}`; the two that check out code (`scan_secrets`, `build_image`)
+re-grant only `contents: read`. `security` and `publish_image` need no token access
+(registry work uses the SWR secrets; DB caching uses the Actions runtime token). The
+launcher's `build-external.yml` sets top-level `permissions: contents: read`. Nothing
+in the pipeline needs write from `GITHUB_TOKEN`.
 
 ## Onboarding and processor creation
 
