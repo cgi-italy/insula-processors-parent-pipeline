@@ -138,6 +138,22 @@ jobs:
               sleep $((m*5))
             done
           }
+          # Idempotent re-run guard. The successful path below DELETES this run's
+          # staging :sha8 (retention), so a replayed publish ("Re-run jobs") has no
+          # copy SOURCE and skopeo would fail 'manifest unknown'. If the staging
+          # source is gone BUT the prod target already exists, the publish already
+          # succeeded: treat the replay as a no-op success. If both are gone, the
+          # image genuinely must be rebuilt (re-run build_image).
+          exists() { docker run --rm -v "$AUTH_DIR:/auth:ro" "$SKOPEO" inspect --authfile "$1" "docker://$2" >/dev/null 2>&1; }
+          if ! exists /auth/staging.json "$IMAGE"; then
+            CHECK="${TARGET_SHA:-$TARGET_LATEST}"
+            if exists /auth/prod.json "$CHECK"; then
+              echo "::notice::staging source $IMAGE already promoted (prod $CHECK exists); re-run no-op"
+              exit 0
+            fi
+            echo "::error::staging source $IMAGE is gone and not yet published; re-run build_image to rebuild it"
+            exit 1
+          fi
           if [ -n "$TARGET_SHA" ]; then
             copy "$TARGET_SHA"
           fi
@@ -151,6 +167,10 @@ jobs:
             echo "Removed staging image $IMAGE"
           else
             echo "::warning::could not remove staging image $IMAGE (publish OK); prune eopaas-test manually if it grows"
+            # Also record it in the run summary: a lost SWR_STAGING delete scope would
+            # otherwise degrade eopaas-test silently (warnings scroll past) until pushes
+            # or quota start failing.
+            echo "- staging cleanup FAILED for \`$IMAGE\` (publish succeeded); check the SWR_STAGING delete scope" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Report published image

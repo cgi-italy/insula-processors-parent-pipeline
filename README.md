@@ -30,11 +30,13 @@ Checkpoint 1 - SECRET SCAN   TruffleHog over the cloned code; verified secret ST
 Checkpoint 2 - BUILD         Buildx builds code/Dockerfile; pushes staging image to SWR (eopaas-test, :sha8).
 Checkpoint 3 - SECURITY SCAN Grype + Trivy on the staging image; HIGH/CRITICAL STOPS.
 Checkpoint 4 - PUBLISH       Skopeo copies the scanned image to eopaas/eopaas:latest (+ :sha8). Automatic.
-Finalize                     (in the launcher) inject the published image into the CWL, upload it as artifact "cwl".
+Finalize                     (in the launcher) inject the published image into the CWL, publish it as a
+                             GitHub Release tagged "cwl-<correlation_id>" (public download URL).
         |
         v
-CLI downloads the "cwl" artifact and POSTs it to https://insula.earth/ogcapi/processes
-with the user's api token (locally; the token never enters Actions).
+CLI reads the release asset URL and POSTs { executionUnit: { href } } to
+https://insula.earth/ogcapi/processes with the user's api token (locally; the token
+never enters Actions). Insula fetches the CWL from that URL.
 ```
 
 Gating is scanner exit codes plus `needs:` dependencies. No manual approval
@@ -137,8 +139,8 @@ registry path.
   (Dependabot updates SHA-pinned actions and keeps the version comment in sync).
   The skopeo/TruffleHog image digests are inline `run:` strings, so bump those by
   hand.
-- `actions/upload-artifact` (used by the launcher's finalize step) is pinned; keep
-  it in the launcher repo's dependabot config.
+- `actions/create-github-app-token` (used by the launcher's finalize step to mint the
+  CWL-publish App token) is pinned; keep it in the launcher repo's dependabot config.
 
 ## GITHUB_TOKEN permissions
 

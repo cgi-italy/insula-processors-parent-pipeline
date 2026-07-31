@@ -66,3 +66,22 @@ jobs:
               sys.exit(1)
           print("reusable-workflow contract OK")
           PY
+
+      - name: no scan/publish gate-bypass patterns
+        # The publish gate is scanner exit codes + needs:. A `continue-on-error` or a
+        # `|| true` on a scan/registry step would silently turn a failure into a pass,
+        # so forbid both in the reusable workflows (a regression only shows up as an
+        # unscanned image reaching prod otherwise). Scan only the reusable files (not
+        # this lint file) and skip comment lines, so a real key/command is caught but
+        # a mention in prose is not.
+        run: |
+          hits=0
+          for f in scan_secrets build_image security publish_image; do
+            wf=".github/workflows/$f.yml"
+            if grep -vE '^[[:space:]]*#' "$wf" | grep -nE 'continue-on-error[[:space:]]*:|\|\|[[:space:]]*true'; then
+              echo "::error::$wf contains a gate-bypass pattern (continue-on-error / '|| true')"
+              hits=1
+            fi
+          done
+          [ "$hits" -eq 0 ] && echo "no gate-bypass patterns in the reusable workflows"
+          exit "$hits"

@@ -97,6 +97,14 @@ jobs:
         # Sorted by Severity then Package name ascending (CRITICAL sorts before HIGH).
         run: |
           report=trivy-results.json
+          # Fail CLOSED: a missing or schema-drifted report (scanner crashed, exited
+          # 0 with no output, or a version bump changed the JSON shape) must block the
+          # publish, not read as zero findings. Assert the report exists and carries
+          # Trivy's top-level schema sentinel before counting.
+          if [ ! -s "$report" ] || ! jq -e 'has("SchemaVersion")' "$report" >/dev/null; then
+            echo "::error::Trivy produced no valid report ($report); failing closed"
+            exit 1
+          fi
           count=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "$report")
           packages=$(jq '[.Results[]?.Vulnerabilities[]?] | group_by(.PkgName) | length' "$report")
           {
@@ -120,7 +128,10 @@ jobs:
               | .[]
               | "| \(.severity) | \(.pkg) | \(.installed) | \(.fixed) | \(.cves) |"
             ' "$report"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Write to the summary file only, NOT stdout: a crafted package name in the
+          # scanner report (e.g. one containing "::error::") would otherwise be echoed
+          # to stdout and parsed as a workflow command (log injection).
           echo "TRIVY_COUNT=$count" >> "$GITHUB_ENV"
 
       - name: Cache Grype vulnerability DB
@@ -157,6 +168,13 @@ jobs:
           GRYPE_JSON: ${{ steps.grype.outputs.json }}
         run: |
           report="$GRYPE_JSON"
+          # Fail CLOSED like Trivy: assert a well-formed Grype report (top-level
+          # "matches" array) before counting, so an empty/crashed/schema-drifted scan
+          # blocks the publish instead of reading as zero HIGH/CRITICAL.
+          if [ -z "$report" ] || [ ! -s "$report" ] || ! jq -e 'has("matches")' "$report" >/dev/null; then
+            echo "::error::Grype produced no valid report; failing closed"
+            exit 1
+          fi
           hits='[.matches[]? | select((.vulnerability.severity | ascii_upcase) == "HIGH" or (.vulnerability.severity | ascii_upcase) == "CRITICAL")]'
           count=$(jq "$hits | length" "$report")
           packages=$(jq "$hits | group_by(.artifact.name) | length" "$report")
@@ -181,19 +199,32 @@ jobs:
               | .[]
               | "| \(.severity) | \(.pkg) | \(.installed) | \(.fixed) | \(.cves) |"
             ' "$report"
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Write to the summary file only, NOT stdout: a crafted package name in the
+          # scanner report (e.g. one containing "::error::") would otherwise be echoed
+          # to stdout and parsed as a workflow command (log injection).
           echo "GRYPE_COUNT=$count" >> "$GITHUB_ENV"
 
       - name: Security gate
         # Blocks publish if either scanner reported HIGH/CRITICAL findings. Runs
         # after both reports so the full picture is always printed first.
         run: |
+          # Fail CLOSED: each count must be SET and a plain integer. An unset or
+          # non-numeric value means the matching report step did not complete
+          # normally, so treat it as a gate failure, never as ${VAR:-0} = pass.
+          for v in TRIVY_COUNT GRYPE_COUNT; do
+            eval "val=\${$v-__unset__}"
+            case "$val" in
+              __unset__|'') echo "::error::$v was not set; the scan did not complete - failing closed"; exit 1 ;;
+              *[!0-9]*) echo "::error::$v is not numeric ('$val'); failing closed"; exit 1 ;;
+            esac
+          done
           fail=0
-          if [ "${TRIVY_COUNT:-0}" -gt 0 ]; then
+          if [ "$TRIVY_COUNT" -gt 0 ]; then
             echo "::error::Trivy found $TRIVY_COUNT HIGH/CRITICAL vulnerabilities"
             fail=1
           fi
-          if [ "${GRYPE_COUNT:-0}" -gt 0 ]; then
+          if [ "$GRYPE_COUNT" -gt 0 ]; then
             echo "::error::Grype found $GRYPE_COUNT HIGH/CRITICAL vulnerabilities"
             fail=1
           fi

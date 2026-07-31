@@ -106,23 +106,37 @@ jobs:
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Log in to base image registry
-        # The Dockerfile FROM still pulls the base image from the internal Harbor.
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ${{ inputs.base_registry }}
-          username: ${{ secrets.BASE_REGISTRY_USERNAME }}
-          password: ${{ secrets.BASE_REGISTRY_PASSWORD }}
+        # The Dockerfile FROM pulls the base image from the internal Registry. Retry the
+        # login (matching the scan/publish retry idiom) so a transient blip does not
+        # fail an otherwise-clean build; password via stdin, never on argv. Secret
+        # values are auto-masked by GitHub in logs.
+        env:
+          REG: ${{ inputs.base_registry }}
+          U: ${{ secrets.BASE_REGISTRY_USERNAME }}
+          P: ${{ secrets.BASE_REGISTRY_PASSWORD }}
+        run: |
+          n=0
+          until printf '%s' "$P" | docker login "$REG" -u "$U" --password-stdin; do
+            n=$((n+1)); [ "$n" -ge 3 ] && { echo "::error::login to base registry $REG failed after retries"; exit 1; }
+            sleep $((n*5))
+          done
 
       - name: Log in to remote registry
         # AK/SK long-term login key. Username format: <region>@<AK>, e.g. eu-de@AK.
         # STAGING credential on purpose: this job executes an untrusted Dockerfile,
         # so it must never hold a credential that can write the published (prod)
-        # namespace. Prod-write creds exist only in publish_image.yml.
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ${{ inputs.swr_registry }}
-          username: ${{ secrets.SWR_STAGING_USERNAME }}
-          password: ${{ secrets.SWR_STAGING_PASSWORD }}
+        # namespace. Prod-write creds exist only in publish_image.yml. Retried;
+        # password via stdin, never on argv.
+        env:
+          REG: ${{ inputs.swr_registry }}
+          U: ${{ secrets.SWR_STAGING_USERNAME }}
+          P: ${{ secrets.SWR_STAGING_PASSWORD }}
+        run: |
+          n=0
+          until printf '%s' "$P" | docker login "$REG" -u "$U" --password-stdin; do
+            n=$((n+1)); [ "$n" -ge 3 ] && { echo "::error::login to SWR $REG failed after retries"; exit 1; }
+            sleep $((n*5))
+          done
 
       - name: Build and push staging image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
