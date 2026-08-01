@@ -52,7 +52,7 @@ jobs:
       - name: Log in to Registry
         # STAGING credential: the scanners only READ the staging image. No job
         # before publish_image.yml ever holds the prod-write credential.
-        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ inputs.swr_registry }}
           username: ${{ secrets.SWR_STAGING_USERNAME }}
