@@ -138,7 +138,9 @@ registry path.
 - `.github/dependabot.yml` opens a monthly grouped PR to bump pinned actions
   (Dependabot updates SHA-pinned actions and keeps the version comment in sync).
   The skopeo/TruffleHog image digests are inline `run:` strings, so bump those by
-  hand.
+  hand. Take the skopeo digest from a `*-immutable` quay.io tag only: quay
+  garbage-collects untagged manifests, so a digest read off a moving tag dies when
+  that tag is rebuilt.
 - `actions/create-github-app-token` (used by the launcher's finalize step to mint the
   CWL-publish App token) is pinned; keep it in the launcher repo's dependabot config.
 
